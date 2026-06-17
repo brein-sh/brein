@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Policy-aware MCP server for the PMXT company brain.
+"""Policy-aware MCP server for the brain.
 
 Exposes curated retrieval + safe write tools over stdio. Designed for Hermes,
 Claude Code, Codex, or any MCP client.
@@ -121,7 +121,7 @@ def _safe_path(file_path: str) -> Path:
         raise ValueError("file_path must be repo-relative")
     full = (REPO_PATH / rel).resolve()
     if full != REPO_PATH and not str(full).startswith(str(REPO_PATH) + os.sep):
-        raise ValueError("file_path escapes company brain repo")
+        raise ValueError("file_path escapes brain repo")
     if ".git" in full.relative_to(REPO_PATH).parts:
         raise ValueError("access to .git is not allowed")
     return full
@@ -294,7 +294,7 @@ def _build_rerank_prompt(query: str, candidates: list[dict[str, Any]]) -> str:
         separators=(",", ":"),
     )
     return (
-        "You are a strict document reranker for the PMXT company brain.\n"
+        "You are a strict document reranker for the brain.\n"
         "Return JSON only. No markdown, no prose, no code fences.\n\n"
         "Task: score each candidate for how directly it helps answer the query.\n"
         "Do not answer the query. Do not invent new facts.\n"
@@ -865,7 +865,7 @@ def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
 
 @mcp.tool(name="brain_list")
 def brain_list(directory: str = ".", max_results: int = 500) -> str:
-    """List markdown files in the company brain."""
+    """List markdown files in the brain."""
     _ensure_repo()
     files = []
     for path in _iter_markdown(directory) or []:
@@ -889,7 +889,7 @@ def brain_search(
     rerank_method: str = "llm",
     force_rebuild_vector_index: bool = False,
 ) -> str:
-    """Hybrid company brain search: keyword/BM25-ish plus vector semantic retrieval.
+    """Hybrid brain search: keyword/BM25-ish plus vector semantic retrieval.
 
     mode can be `hybrid`, `keyword`, or `vector`. Hybrid preserves exact-match
     strengths while adding semantic recall for questions whose wording differs
@@ -1030,7 +1030,7 @@ def brain_search(
 
 @mcp.tool(name="brain_read")
 def brain_read(file_path: str) -> str:
-    """Read a specific company brain file by repo-relative path."""
+    """Read a specific brain file by repo-relative path."""
     _ensure_repo()
     full = _safe_path(file_path)
     if not full.exists() or not full.is_file():
@@ -1068,9 +1068,9 @@ This is intentionally retrieval-grounded, not a hallucinated final answer.
     return _json({"question": question, "evidence": used, "answer_instruction": "Use only this evidence unless you call more tools. Cite paths in the final answer."})
 
 
-@mcp.tool(name="brain_update")
+@mcp.tool(name="brain_write")
 def brain_update(file_path: str, content: str, commit_message: str, mode: str = "replace") -> str:
-    """Create/replace/append a curated company brain file, validate, commit, and push."""
+    """Create/replace/append a curated brain file, validate, commit, and push."""
     _ensure_repo()
     if _detect_secrets(content):
         return _json({"error": "Refusing to write likely secret/credential material."})
@@ -1152,7 +1152,7 @@ def brain_audit() -> str:
 
 @mcp.tool(name="brain_classify")
 def brain_classify(text: str) -> str:
-    """Heuristically route text to company brain, personal brain, memory, nowhere, or split."""
+    """Heuristically route text to brain, personal brain, memory, nowhere, or split."""
     lower = text.lower()
     if _detect_secrets(text):
         return _json({"destination": "nowhere", "reason": "Looks like secret/credential material."})
@@ -1160,7 +1160,7 @@ def brain_classify(text: str) -> str:
     personal_terms = ["family", "health", "home", "travel", "diet", "personal", "private"]
     if any(k in lower for k in company_terms) and any(k in lower for k in personal_terms):
         dest = "split"
-        reason = "Contains both company and personal indicators; write only team-shareable subset to company brain."
+        reason = "Contains both company and personal indicators; write only team-shareable subset to brain."
     elif any(k in lower for k in company_terms):
         dest = "company_brain"
         reason = "Contains PMXT/company/work indicators."
@@ -1169,7 +1169,7 @@ def brain_classify(text: str) -> str:
         reason = "Looks like a durable user preference/profile fact."
     else:
         dest = "personal_or_ignore"
-        reason = "No clear company indicator; avoid shared company brain unless work relevance is explicit."
+        reason = "No clear company indicator; avoid shared brain unless work relevance is explicit."
     return _json({"destination": dest, "reason": reason})
 
 
