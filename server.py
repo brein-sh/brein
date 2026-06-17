@@ -52,11 +52,15 @@ _EMBEDDER = None
 _EMBEDDER_BACKEND = "uninitialized"
 
 mcp = FastMCP(
-    "Company Brain",
+    "Brain",
     instructions=(
-        "Policy-aware company brain for pmxt-dev/PMXT. Use for company/team-shareable "
-        "knowledge only. Keep personal/private facts out. Never store secrets. "
-        "Search/read before writing; writes validate, regenerate index, commit, and push."
+        "This is the user's brain — a git-backed markdown repo of their durable knowledge. "
+        "USE these tools, do NOT fall back to ls/Read/Write/grep, even if the brain looks small. "
+        "brain_list: enumerate files. "
+        "brain_read: read a file by path. "
+        "brain_search: hybrid keyword+vector retrieval — always prefer this over grep. "
+        "brain_write: write or update a file (commits + pushes). "
+        "Never store secrets. Search before writing."
     ),
 )
 
