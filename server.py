@@ -840,14 +840,20 @@ def _pull_ff() -> None:
 
 
 def _validate_after_write(changed_docs: bool) -> list[str]:
+    # ponytail: validator/indexer scripts are optional. Original company-brain ships them;
+    # arbitrary user brains don't. Skip silently when absent.
     messages = []
-    if changed_docs:
+    gen = REPO_PATH / "scripts" / "generate_index.py"
+    val = REPO_PATH / "scripts" / "validate_docs.py"
+    if changed_docs and gen.exists():
         _run_repo_cmd(["python3", "scripts/generate_index.py"], check=True)
         messages.append("regenerated docs/index.md")
-    _run_repo_cmd(["python3", "scripts/validate_docs.py"], check=True)
-    messages.append("validate_docs passed")
-    _run_repo_cmd(["python3", "scripts/generate_index.py", "--check"], check=True)
-    messages.append("generated index check passed")
+    if val.exists():
+        _run_repo_cmd(["python3", "scripts/validate_docs.py"], check=True)
+        messages.append("validate_docs passed")
+    if gen.exists():
+        _run_repo_cmd(["python3", "scripts/generate_index.py", "--check"], check=True)
+        messages.append("generated index check passed")
     return messages
 
 
@@ -1101,9 +1107,11 @@ def brain_audit() -> str:
     """Summarize repo health for retrieval and write safety."""
     _ensure_repo()
     status = _run_git(["status", "--short"], check=True).stdout.strip()
-    validate = _run_repo_cmd(["python3", "scripts/validate_docs.py"]).stdout.strip()
-    index = _run_repo_cmd(["python3", "scripts/generate_index.py", "--check"]).stdout.strip()
-    docs = list(_iter_markdown("docs") or [])
+    val_script = REPO_PATH / "scripts" / "validate_docs.py"
+    gen_script = REPO_PATH / "scripts" / "generate_index.py"
+    validate = _run_repo_cmd(["python3", "scripts/validate_docs.py"]).stdout.strip() if val_script.exists() else "(no validator)"
+    index = _run_repo_cmd(["python3", "scripts/generate_index.py", "--check"]).stdout.strip() if gen_script.exists() else "(no indexer)"
+    docs = list(_iter_markdown(".") or [])
     total = len(docs)
     with_fm = 0
     by_domain: dict[str, int] = {}
