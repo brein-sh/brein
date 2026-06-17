@@ -69,8 +69,12 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)seed phrase\s*[:=]"),
 ]
 
-ALLOWED_WRITE_PREFIXES = ("docs/", "skills/", "templates/")
-ALLOWED_ROOT_WRITES = {"AGENTS.md", "README.md", "CONTRIBUTING.md"}
+# ponytail: permissive by default — brain is the user's. The path-traversal
+# guard in _resolve_write_path is what actually keeps us safe.
+ALLOWED_WRITE_PREFIXES = tuple(
+    p.strip() for p in os.environ.get("BRAIN_WRITE_PREFIXES", "").split(",") if p.strip()
+) or ("",)  # "" matches every relative path
+ALLOWED_ROOT_WRITES = {"AGENTS.md", "README.md", "CONTRIBUTING.md", "CLAUDE.md"}
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
     "in", "is", "it", "of", "on", "or", "our", "the", "to", "what", "when",
@@ -103,8 +107,11 @@ def _ensure_repo() -> None:
 
 
 def _safe_path(file_path: str) -> Path:
-    if not file_path or file_path.strip() in {".", ".."}:
-        raise ValueError("file_path is required")
+    # "" or "." means repo root — used by list/search to scan the whole brain
+    if not file_path or file_path.strip() == ".":
+        return REPO_PATH
+    if file_path.strip() == "..":
+        raise ValueError("file_path escapes repo")
     rel = Path(file_path)
     if rel.is_absolute():
         raise ValueError("file_path must be repo-relative")
@@ -143,14 +150,21 @@ def _frontmatter(text: str) -> dict[str, Any]:
     return out
 
 
+_EXCLUDED_DIRS = {".git", "node_modules", ".venv", ".next", "__pycache__", "dist", "build"}
+
+
 def _iter_markdown(directory: str = "."):
     base = _safe_path(directory)
     if not base.exists():
         return
     paths = base.rglob("*.md") if base.is_dir() else [base]
     for path in paths:
-        if path.is_file() and ".git" not in path.relative_to(REPO_PATH).parts:
-            yield path
+        if not path.is_file():
+            continue
+        parts = path.relative_to(REPO_PATH).parts
+        if any(p in _EXCLUDED_DIRS for p in parts):
+            continue
+        yield path
 
 
 def _tokens(query: str) -> list[str]:
@@ -704,7 +718,7 @@ def _vector_signature(paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def _load_vector_index(directory: str = "docs", force_rebuild: bool = False) -> dict[str, Any]:
+def _load_vector_index(directory: str = ".", force_rebuild: bool = False) -> dict[str, Any]:
     paths = list(_iter_markdown(directory) or [])
     signature = _vector_signature(paths)
     if not force_rebuild and VECTOR_INDEX_PATH.exists():
@@ -846,7 +860,7 @@ def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
 
 
 @mcp.tool(name="brain_list")
-def brain_list(directory: str = "docs", max_results: int = 500) -> str:
+def brain_list(directory: str = ".", max_results: int = 500) -> str:
     """List markdown files in the company brain."""
     _ensure_repo()
     files = []
@@ -860,7 +874,7 @@ def brain_list(directory: str = "docs", max_results: int = 500) -> str:
 @mcp.tool(name="brain_search")
 def brain_search(
     query: str,
-    directory: str = "docs",
+    directory: str = ".",
     domain: str | None = None,
     tag: str | None = None,
     status: str | None = None,
