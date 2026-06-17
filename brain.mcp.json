@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "brain": {
+      "command": "/REPLACE/WITH/ABSOLUTE/PATH/TO/brain-mcp/brain-mcp.sh",
+      "env": {
+        "BRAIN_REPO": "/REPLACE/WITH/ABSOLUTE/PATH/TO/YOUR/BRAIN_REPO"
+      }
+    }
+  }
+}

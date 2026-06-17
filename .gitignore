@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+uv.lock
+retrieval-log.jsonl
+vector-index.json
+.DS_Store

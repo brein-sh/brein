@@ -1,0 +1,9 @@
+[project]
+name = "brain-mcp"
+version = "0.1.0"
+description = "Policy-aware MCP server for the PMXT company brain"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.0.0",
+  "fastembed>=0.7.0",
+]
