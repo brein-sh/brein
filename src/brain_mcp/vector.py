@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from config import (
+from .config import (
     EMBEDDING_MODEL_NAME,
     HASH_EMBED_DIMS,
     REPO_PATH,
@@ -20,7 +20,7 @@ from config import (
     VECTOR_CHUNK_OVERLAP,
     VECTOR_INDEX_PATH,
 )
-from shared import _frontmatter, _iter_markdown, _matches_filters, _safe_path
+from .shared import _frontmatter, _iter_markdown, _matches_filters, _safe_path
 
 _EMBEDDER = None
 _EMBEDDER_BACKEND = "uninitialized"

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import (
+from .config import (
     RERANK_BIN_DEFAULT,
     RERANK_COMMAND_DEFAULT,
     RERANK_MAX_TOP_K,
@@ -21,7 +21,7 @@ from config import (
     RERANK_SNIPPET_COUNT,
     RERANK_TIMEOUT_SECONDS,
 )
-from shared import _result_text, _truncate_text, _truthy
+from .shared import _result_text, _truncate_text, _truthy
 
 
 def _normalize_rerank_method(method: str | None) -> str:

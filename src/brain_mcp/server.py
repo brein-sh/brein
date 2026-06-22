@@ -15,7 +15,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from config import (
+from .config import (
     EMBEDDING_MODEL_NAME,
     HYBRID_KEYWORD_WEIGHT,
     HYBRID_VECTOR_WEIGHT,
@@ -25,9 +25,9 @@ from config import (
     RERANK_MAX_TOP_K,
     VECTOR_INDEX_PATH,
 )
-from rerank import _maybe_rerank
-from telemetry import logged
-from shared import (
+from .rerank import _maybe_rerank
+from .telemetry import logged
+from .shared import (
     _allowed_write_path,
     _append_retrieval_log,
     _detect_secrets,
@@ -44,7 +44,7 @@ from shared import (
     _score,
     _tokens,
 )
-from vector import _best_vector_hits, _get_embedder_backend, _load_vector_index, _vector_health
+from .vector import _best_vector_hits, _get_embedder_backend, _load_vector_index, _vector_health
 
 mcp = FastMCP(
     "Brain",
@@ -498,13 +498,17 @@ def _startup_warmup() -> None:
     threading.Thread(target=_bg_warmup, name="cb-warmup", daemon=True).start()
 
 
-if __name__ == "__main__":
+def main() -> None:
     if os.environ.get("BRAIN_MCP_SELF_TEST") == "1":
         print(brain_audit())
-    else:
-        try:
-            _ensure_repo()
-            _startup_warmup()
-        except Exception as exc:
-            print(f"[brain-mcp] startup error: {exc}", file=sys.stderr, flush=True)
-        mcp.run(transport="stdio")
+        return
+    try:
+        _ensure_repo()
+        _startup_warmup()
+    except Exception as exc:
+        print(f"[brain-mcp] startup error: {exc}", file=sys.stderr, flush=True)
+    mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

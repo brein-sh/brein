@@ -1,9 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "brain-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "A policy-aware MCP server for an org-wide knowledge brain that lives in a git repo."
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+authors = [{ name = "brainincorp" }]
 dependencies = [
   "mcp>=1.0.0",
   "fastembed>=0.7.0",
 ]
+
+[project.scripts]
+brain-mcp = "brain_mcp.server:main"
+
+[project.urls]
+Homepage = "https://brainincorp.com"
+Repository = "https://github.com/brainincorp/brain-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brain_mcp"]

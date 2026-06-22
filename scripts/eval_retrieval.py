@@ -8,13 +8,17 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
-EVAL_CASES_PATH = SCRIPT_DIR / "evals" / "brain_retrieval_eval_cases.json"
+REPO_ROOT = SCRIPT_DIR.parent
+# Override with --cases CLI flag in practice; fallback to repo-local examples.
+EVAL_CASES_PATH = REPO_ROOT / "evals" / "brain_retrieval_eval_cases.json"
 
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+# Make `brain_mcp` importable when running this script directly without
+# `uv run`. Falls back to the installed package otherwise.
+SRC = REPO_ROOT / "src"
+if SRC.exists() and str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-import server  # noqa: E402
+from brain_mcp import server  # noqa: E402
 
 
 def load_cases(limit: int | None = None) -> list[dict[str, Any]]:

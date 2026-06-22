@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from config import LOG_PATH, REPO_PATH
+from .config import LOG_PATH, REPO_PATH
 
 _FLUSH_EVERY = int(os.environ.get("BRAIN_TELEMETRY_FLUSH_EVERY", "10"))
 _event_count = 0
