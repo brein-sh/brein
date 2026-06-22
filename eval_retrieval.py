@@ -170,7 +170,7 @@ def format_float(value: float | None) -> str:
 
 
 def print_text(report: dict[str, Any]) -> None:
-    print(f"company-brain retrieval evals: {report['cases_total']} cases")
+    print(f"brain retrieval evals: {report['cases_total']} cases")
     print(f"source: {EVAL_CASES_PATH}")
     print()
     for mode_name, mode_report in report["modes"].items():
@@ -196,7 +196,7 @@ def print_text(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run local company-brain retrieval evals.")
+    parser = argparse.ArgumentParser(description="Run local brain retrieval evals.")
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of eval cases to run.")
     parser.add_argument(
         "--json",

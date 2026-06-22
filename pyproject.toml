@@ -1,7 +1,7 @@
 [project]
 name = "brain-mcp"
-version = "0.1.0"
-description = "Policy-aware MCP server for the PMXT company brain"
+version = "0.2.0"
+description = "A policy-aware MCP server for an org-wide knowledge brain that lives in a git repo."
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.0.0",
