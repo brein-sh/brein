@@ -5,3 +5,6 @@ uv.lock
 retrieval-log.jsonl
 vector-index.json
 .DS_Store
+
+# eval cases are user/org-specific — bring your own.
+evals/
