@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "brain-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "A policy-aware MCP server for an org-wide knowledge brain that lives in a git repo."
 readme = "README.md"
 license = "MIT"

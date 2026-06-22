@@ -23,28 +23,31 @@ Point an MCP-capable client (Claude Code, Cursor, Codex) at `examples/brain.mcp.
 | `BRAIN_VECTOR_INDEX` | `~/.braincorp/vector-index.json` | Vector index cache. |
 | `BRAIN_TELEMETRY_FLUSH_EVERY` | `10` | Auto-commit + push the retrieval log every N events. |
 
-## Continuous eval (optional)
+## Continuous eval (on by default)
 
-When enabled, every `brain_answer` call decides whether the query is worth comparing to a no-brain baseline. If yes, a background thread:
+Every `brain_answer` call decides whether the query is worth comparing to a no-brain baseline. If yes, a background thread:
 
 1. Re-asks the question with brain evidence (= "with-brain" answer)
 2. Re-asks the question with no evidence (= "no-brain" answer)
-3. Cheap LLM judge picks better/tie/worse
+3. LLM judge picks better/tie/worse
 4. Appends one row to `.brain/eval-log.jsonl`
 
-Triggers (free to detect):
-- `dont_know` — answer text matched a "couldn't find / no record / not in the repo" pattern
-- `novel_hash` — first time this query has been seen this process
+**Inference runs through whichever client CLI is on your PATH** — `claude`, `codex`, or `gemini` — so it uses your existing subscription auth. No extra API key needed. Falls back to OpenRouter only if no CLI is found (useful in CI / headless).
 
-Set these env vars:
+Triggers (free to detect):
+- `dont_know` — answer text matched a "couldn't find / no record / not in" pattern
+- `novel_hash` — first time this query has been seen this process
 
 | Env | Default | Purpose |
 |---|---|---|
-| `BRAIN_EVAL_ENABLED` | `off` | Set to `on` to turn the loop on. |
-| `BRAIN_EVAL_OPENROUTER_KEY` | — | OpenRouter API key for the A/B + judge calls. Required. |
-| `BRAIN_EVAL_MODEL` | `deepseek/deepseek-v4-flash` | Model used for both with-brain and no-brain answers. |
-| `BRAIN_EVAL_JUDGE_MODEL` | `deepseek/deepseek-v4-flash` | Model used to pick the winner. |
-| `BRAIN_EVAL_TIMEOUT_S` | `60` | Per-request timeout. |
+| `BRAIN_EVAL_ENABLED` | `on` | Set to `off` to disable entirely. |
+| `BRAIN_EVAL_CLIENT` | `claude,codex,gemini` | CLI preference order; first one on PATH wins. |
+| `BRAIN_EVAL_CLI_TIMEOUT_S` | `120` | Per-CLI-call timeout. |
+| `BRAIN_EVAL_OPENROUTER_KEY` | — | Fallback only — used when no CLI is on PATH. |
+| `BRAIN_EVAL_MODEL` | `deepseek/deepseek-v4-flash` | Model used with the OpenRouter fallback. |
+| `BRAIN_EVAL_TIMEOUT_S` | `60` | OpenRouter request timeout. |
+
+A recursion guard env var (`BRAIN_EVAL_IN_PROGRESS=1`) is set on subprocessed CLIs so the child's `brain_answer` calls don't loop the eval back into themselves.
 
 The dataset (`.brain/eval-log.jsonl`) grows over time and lives inside your brain repo — searchable by `brain_search`, committable by the same auto-commit loop, viewable by anything that reads the file. Run aggregates on it to produce a with/without effectiveness matrix any time you want.
 
