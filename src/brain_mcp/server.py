@@ -45,6 +45,7 @@ from .shared import (
     _tokens,
 )
 from .vector import _best_vector_hits, _get_embedder_backend, _load_vector_index, _vector_health
+from .eval import maybe_eval
 
 mcp = FastMCP(
     "Brain",
@@ -329,6 +330,12 @@ This is intentionally retrieval-grounded, not a hallucinated final answer.
             "excerpt": content[:2500],
         })
     _append_retrieval_log(question, [u["path"] for u in used], [u["path"] for u in used], "evidence_bundle", kind="answer")
+    # ponytail: kick off a non-blocking background A/B if eval is enabled and
+    # this query trips a trigger. Fire-and-forget; never blocks the client.
+    evidence_block = "\n\n".join(
+        f"--- {u['path']} ---\n{u['excerpt']}" for u in used
+    )
+    maybe_eval(question=question, evidence_block=evidence_block)
     return _json({"question": question, "evidence": used, "answer_instruction": "Use only this evidence unless you call more tools. Cite paths in the final answer."})
 
 
