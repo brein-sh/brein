@@ -1,0 +1,23 @@
+{
+  "name": "brein",
+  "version": "0.1.0",
+  "description": "npx wrapper for brein — installs the Python MCP server and runs the setup wizard.",
+  "license": "MIT",
+  "homepage": "https://brein.sh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brein-sh/brein.git",
+    "directory": "npm"
+  },
+  "bin": {
+    "brein": "./bin/brein.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["mcp", "llm", "knowledge-base", "rag", "brain"]
+}
