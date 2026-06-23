@@ -79,10 +79,11 @@ def _pull_ff() -> None:
 def _validate_after_write(changed_docs: bool) -> list[str]:
     messages = []
     index_script = _bundled_script("generate_index.py", "BRAIN_INDEX_SCRIPT")
+    validate_script = _bundled_script("validate_docs.py", "BRAIN_VALIDATE_SCRIPT")
     if changed_docs:
         _run_repo_cmd(["python3", index_script], check=True)
         messages.append("regenerated docs/index.md")
-    _run_repo_cmd(["python3", "scripts/validate_docs.py"], check=True)
+    _run_repo_cmd(["python3", validate_script], check=True)
     messages.append("validate_docs passed")
     _run_repo_cmd(["python3", index_script, "--check"], check=True)
     messages.append("generated index check passed")
@@ -400,7 +401,9 @@ def brain_audit() -> str:
     """Summarize repo health for retrieval and write safety."""
     _ensure_repo()
     status = _run_git(["status", "--short"], check=True).stdout.strip()
-    validate = _run_repo_cmd(["python3", "scripts/validate_docs.py"]).stdout.strip()
+    validate = _run_repo_cmd(
+        ["python3", _bundled_script("validate_docs.py", "BRAIN_VALIDATE_SCRIPT")]
+    ).stdout.strip()
     index = _run_repo_cmd(
         ["python3", _bundled_script("generate_index.py", "BRAIN_INDEX_SCRIPT"), "--check"]
     ).stdout.strip()
