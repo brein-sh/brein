@@ -13,15 +13,23 @@ Website: https://brein.sh
 ## Quickstart
 
 ```bash
-git clone https://github.com/brein-sh/brein && cd brein
-uv sync
-brein setup          # interactive: brain repo, paths, eval, MCP client
-brein mcp claude     # prints the snippet to paste into your client config
+npx brein init
 ```
 
-Then restart your MCP client. Verify with `brein doctor`.
+Walks you through the brain repo, paths, eval, and MCP client config. Then restart your client and verify with `brein doctor`.
 
-Requirements: Python 3.11+, `uv`, `git`, an MCP-capable client.
+Requirements: Node, Python 3.11+, `git`, an MCP-capable client.
+
+<details><summary>From source</summary>
+
+```bash
+git clone https://github.com/brein-sh/brein && cd brein
+uv sync
+brein setup
+brein mcp claude
+```
+
+</details>
 
 ## CLI
 
