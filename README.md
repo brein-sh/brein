@@ -121,7 +121,6 @@ After restarting your client, ask it to list MCP tools. You should see:
 - `brain_answer`
 - `brain_update`
 - `brain_audit`
-- `brain_classify`
 - `brain_retrieval_log`
 
 ## How to use the tools
@@ -143,7 +142,6 @@ Tool behavior summary:
 | `brain_list(directory="docs")` | Lists markdown files under a repo-relative directory. |
 | `brain_update(file_path, content, commit_message, mode)` | Creates/replaces/appends an allowed file, validates the target repo, commits, and pushes to `origin main` in the background. |
 | `brain_audit()` | Reports repo cleanliness, docs/frontmatter counts, retrieval log path, and vector index health. |
-| `brain_classify(text)` | Heuristically routes text to company brain, personal brain, assistant memory, ignore, split, or nowhere. Multi-brain routing is planned in issue #4. |
 | `brain_retrieval_log(...)` | Manually appends retrieval outcome telemetry; search/read/answer also auto-log. |
 
 ## CLI roadmap

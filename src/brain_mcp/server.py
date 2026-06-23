@@ -454,30 +454,6 @@ def brain_audit() -> str:
     })
 
 
-@mcp.tool(name="brain_classify")
-@logged("brain_classify")
-def brain_classify(text: str) -> str:
-    """Heuristically route text to brain, personal brain, memory, nowhere, or split."""
-    lower = text.lower()
-    if _detect_secrets(text):
-        return _json({"destination": "nowhere", "reason": "Looks like secret/credential material."})
-    work_terms = ["customer", "client", "investor", "team", "decision", "deadline", "company", "project", "meeting", "incident", "postmortem"]
-    personal_terms = ["family", "health", "home", "travel", "diet", "personal", "private"]
-    if any(k in lower for k in work_terms) and any(k in lower for k in personal_terms):
-        dest = "split"
-        reason = "Mixed work + personal signal. Save only team-shareable parts to the brain."
-    elif any(k in lower for k in work_terms):
-        dest = "brain"
-        reason = "Looks like durable work/team knowledge."
-    elif any(k in lower for k in ["prefer", "timezone", "style", "always"]):
-        dest = "assistant_memory"
-        reason = "Looks like a durable user preference/profile fact — for assistant memory, not the shared brain."
-    else:
-        dest = "ignore"
-        reason = "No clear durable signal — likely ephemeral chat."
-    return _json({"destination": dest, "reason": reason})
-
-
 @mcp.tool(name="brain_retrieval_log")
 @logged("brain_retrieval_log")
 def brain_retrieval_log(question: str, hits: list[str] | None = None, used_docs: list[str] | None = None, outcome: str = "unknown") -> str:
