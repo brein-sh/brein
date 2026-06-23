@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 brain-mcp = "brain_mcp.server:main"
 brein = "brain_mcp.cli:main"
+brain-eval = "brain_mcp._scripts.eval_retrieval:main"
 
 [project.urls]
 Homepage = "https://brainincorp.com"

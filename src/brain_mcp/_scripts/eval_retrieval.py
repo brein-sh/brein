@@ -9,8 +9,34 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-# Override with --cases CLI flag in practice; fallback to repo-local examples.
 EVAL_CASES_PATH = REPO_ROOT / "evals" / "brain_retrieval_eval_cases.json"
+
+DEFAULT_CASES: list[dict[str, Any]] = [
+    {
+        "id": "what-is-rag",
+        "question": "What is retrieval-augmented generation?",
+        "category": "concept",
+        "priority": "low",
+        "retrieval": {"expected_docs": ["docs/concepts/rag.md"], "forbidden_top_docs": []},
+    },
+    {
+        "id": "deploy-runbook",
+        "question": "How do I deploy the staging cluster?",
+        "category": "ops",
+        "priority": "high",
+        "retrieval": {
+            "expected_docs": ["docs/runbooks/staging-deploy.md"],
+            "forbidden_top_docs": ["docs/runbooks/production-deploy.md"],
+        },
+    },
+    {
+        "id": "onboarding-checklist",
+        "question": "What does the new-hire onboarding checklist look like?",
+        "category": "people",
+        "priority": "medium",
+        "retrieval": {"expected_docs": ["docs/people/onboarding.md"], "forbidden_top_docs": []},
+    },
+]
 
 # Make `brain_mcp` importable when running this script directly without
 # `uv run`. Falls back to the installed package otherwise.
@@ -21,12 +47,13 @@ if SRC.exists() and str(SRC) not in sys.path:
 from brain_mcp import server  # noqa: E402
 
 
-def load_cases(limit: int | None = None) -> list[dict[str, Any]]:
-    payload = json.loads(EVAL_CASES_PATH.read_text(encoding="utf-8"))
-    cases = payload.get("cases", [])
-    if limit is not None:
-        cases = cases[:limit]
-    return cases
+def load_cases(limit: int | None = None, path: Path | None = None) -> list[dict[str, Any]]:
+    target = path or EVAL_CASES_PATH
+    if target.exists():
+        cases = json.loads(target.read_text(encoding="utf-8")).get("cases", [])
+    else:
+        cases = DEFAULT_CASES
+    return cases[:limit] if limit is not None else cases
 
 
 def parse_search(query: str, mode: str, rerank: bool = False, rerank_method: str = "heuristic") -> dict[str, Any]:

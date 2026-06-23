@@ -109,7 +109,7 @@ def check_mcp_server(_: BreinConfig) -> Result:
         return Result(OK, "brain-mcp launcher", bin_path)
     return Result(
         WARN, "brain-mcp launcher", "console script not on PATH",
-        fix="run `uv sync` from the repo, or use scripts/brain-mcp.sh",
+        fix="run `uv sync` or `pip install -e .` from the repo",
     )
 
 
