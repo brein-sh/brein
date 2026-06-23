@@ -11,9 +11,24 @@ import json
 import os
 import sys
 import threading
+from importlib import resources
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+
+
+def _bundled_script(name: str, env_override: str) -> str:
+    """Return the absolute path to a bundled brein script, with env override.
+
+    `name` is the file under `brain_mcp/_scripts/`. `env_override` lets users
+    point at a custom version in their own brain repo. Without an override,
+    we ship the script as part of the package — so a fresh markdown brain
+    repo never needs to provide its own `scripts/` directory.
+    """
+    custom = os.environ.get(env_override)
+    if custom:
+        return custom
+    return str(resources.files("brain_mcp._scripts").joinpath(name))
 
 from .config import (
     EMBEDDING_MODEL_NAME,
@@ -63,12 +78,13 @@ def _pull_ff() -> None:
 
 def _validate_after_write(changed_docs: bool) -> list[str]:
     messages = []
+    index_script = _bundled_script("generate_index.py", "BRAIN_INDEX_SCRIPT")
     if changed_docs:
-        _run_repo_cmd(["python3", "scripts/generate_index.py"], check=True)
+        _run_repo_cmd(["python3", index_script], check=True)
         messages.append("regenerated docs/index.md")
     _run_repo_cmd(["python3", "scripts/validate_docs.py"], check=True)
     messages.append("validate_docs passed")
-    _run_repo_cmd(["python3", "scripts/generate_index.py", "--check"], check=True)
+    _run_repo_cmd(["python3", index_script, "--check"], check=True)
     messages.append("generated index check passed")
     return messages
 
@@ -385,7 +401,9 @@ def brain_audit() -> str:
     _ensure_repo()
     status = _run_git(["status", "--short"], check=True).stdout.strip()
     validate = _run_repo_cmd(["python3", "scripts/validate_docs.py"]).stdout.strip()
-    index = _run_repo_cmd(["python3", "scripts/generate_index.py", "--check"]).stdout.strip()
+    index = _run_repo_cmd(
+        ["python3", _bundled_script("generate_index.py", "BRAIN_INDEX_SCRIPT"), "--check"]
+    ).stdout.strip()
     docs = list(_iter_markdown("docs") or [])
     total = len(docs)
     with_fm = 0
@@ -465,6 +483,261 @@ def brain_retrieval_log(question: str, hits: list[str] | None = None, used_docs:
     return _json({"logged": True, "path": str(LOG_PATH)})
 
 
+@mcp.tool(name="brain_eval_summary")
+@logged("brain_eval_summary")
+def brain_eval_summary(include_examples: bool = True) -> str:
+    """Aggregate .brain/eval-log.jsonl into a readable summary.
+
+    Splits stats by question_class and backend, filters out rows tagged
+    `*-deprecated` from the headline rate (old methodology), and lists
+    recent brain losses on internal_only/mixed questions — those are the
+    rows worth patching in the brain.
+    """
+    import collections
+    path = REPO_PATH / ".brain" / "eval-log.jsonl"
+    if not path.exists():
+        return "(no eval log yet)"
+    rows = [json.loads(l) for l in path.open() if l.strip()]
+    if not rows:
+        return "(eval log empty)"
+
+    robust = [r for r in rows if "deprecated" not in r.get("backend", "")]
+    by_verdict = collections.Counter(r.get("verdict", "?") for r in robust)
+    by_class = collections.Counter(r.get("question_class", "unknown") for r in robust)
+    by_backend = collections.Counter(r.get("backend", "?") for r in robust)
+    # Bucket triggers on the prefix before ":" so per-row rerun tags collapse.
+    by_trigger = collections.Counter(
+        (r.get("trigger", "?") or "?").split(":", 1)[0] for r in robust
+    )
+
+    def pct(n: int, d: int) -> str:
+        return f"{round(100 * n / d, 1)}%" if d else "—"
+
+    n = len(robust)
+    brain_wins = by_verdict.get("brain_better", 0)
+    ties = by_verdict.get("tie", 0)
+    losses = by_verdict.get("no_brain_better", 0)
+
+    # Brain losses on questions where brain *should* help (internal/mixed)
+    loss_rows = [
+        r for r in robust
+        if r.get("verdict") == "no_brain_better"
+        and r.get("question_class") in {"internal_only", "mixed"}
+    ]
+
+    # Cost / latency / token roll-ups, when the row has a `totals` block.
+    def _totals(field: str) -> list[float]:
+        out: list[float] = []
+        for r in robust:
+            t = r.get("totals") or {}
+            v = t.get(field)
+            if isinstance(v, (int, float)) and v > 0:
+                out.append(float(v))
+        return out
+
+    costs = _totals("cost_usd")
+    walls = _totals("wall_clock_ms")
+    in_tokens = _totals("input_tokens")
+    out_tokens = _totals("output_tokens")
+    cache_tokens = _totals("cache_read_input_tokens")
+
+    def _median(xs: list[float]) -> float:
+        if not xs:
+            return 0.0
+        s = sorted(xs)
+        return s[len(s) // 2]
+
+    # Per-arm wall-clock medians, for "did brain save time" view.
+    def _arm_lat(arm_key: str) -> float:
+        xs = []
+        for r in robust:
+            m = r.get(arm_key) or {}
+            v = m.get("latency_ms")
+            if isinstance(v, (int, float)) and v > 0:
+                xs.append(float(v))
+        return _median(xs)
+
+    brain_p50 = _arm_lat("brain_meta")
+    no_brain_p50 = _arm_lat("no_brain_meta")
+
+    # ── Per-query A/B comparison table (fast facts) ──────────────────────
+    def _arm_field(arm_key: str, field: str) -> list[float]:
+        xs = []
+        for r in robust:
+            m = r.get(arm_key) or {}
+            v = m.get(field)
+            if isinstance(v, (int, float)) and v >= 0:
+                xs.append(float(v))
+        return xs
+
+    def _med(xs: list[float]) -> float:
+        return _median(xs) if xs else 0.0
+
+    def _mean(xs: list[float]) -> float:
+        return (sum(xs) / len(xs)) if xs else 0.0
+
+    def _total_tokens(meta: dict) -> float:
+        return float(
+            (meta.get("input_tokens") or 0)
+            + (meta.get("output_tokens") or 0)
+            + (meta.get("cache_read_input_tokens") or 0)
+            + (meta.get("cache_creation_input_tokens") or 0)
+        )
+
+    rows_with_meta = [
+        r for r in robust
+        if isinstance(r.get("brain_meta"), dict) and isinstance(r.get("no_brain_meta"), dict)
+    ]
+    fast_facts_lines: list[str] = []
+    if rows_with_meta:
+        # Paired arrays — only keep rows where BOTH arms have the field present.
+        def _paired(field: str, divisor: float = 1.0, require_truthy: bool = False) -> tuple[list[float], list[float]]:
+            bx, nx = [], []
+            for r in rows_with_meta:
+                bv = (r["brain_meta"] or {}).get(field)
+                nv = (r["no_brain_meta"] or {}).get(field)
+                if not isinstance(bv, (int, float)) or not isinstance(nv, (int, float)):
+                    continue
+                if require_truthy and (not bv or not nv):
+                    continue
+                bx.append(bv / divisor)
+                nx.append(nv / divisor)
+            return bx, nx
+
+        b_lat, n_lat = _paired("latency_ms", divisor=1000.0, require_truthy=True)
+        b_out, n_out = _paired("output_tokens")
+        b_cost, n_cost = _paired("cost_usd", require_truthy=True)
+
+        # Token totals — paired across all four buckets.
+        b_tot, n_tot = [], []
+        for r in rows_with_meta:
+            b_tot.append(_total_tokens(r["brain_meta"]))
+            n_tot.append(_total_tokens(r["no_brain_meta"]))
+
+        def _verb(brain_val: float, no_brain_val: float, unit: str, is_cost: bool = False) -> str:
+            delta = no_brain_val - brain_val
+            if abs(delta) < 0.01:
+                return f"roughly equal ({unit}{abs(delta):.1f})"
+            if is_cost:
+                if delta > 0:
+                    return f"**brain saves {unit}{delta:.2f}** per query"
+                return f"brain costs ~{unit}{-delta:.2f} MORE per query"
+            if delta > 0:
+                return f"**brain saves {delta:.1f}{unit}**"
+            return f"brain uses {-delta:.1f}{unit} MORE"
+
+        def _fmt_tok(n: float) -> str:
+            return f"{n/1000:.0f}k" if n >= 1000 else f"{n:.0f}"
+
+        bl_med, nl_med = _med(b_lat), _med(n_lat)
+        bt_med, nt_med = _med(b_tot), _med(n_tot)
+        bo_med, no_med = _med(b_out), _med(n_out)
+        bc_med, nc_med = _med(b_cost), _med(n_cost)
+
+        # Paired deltas — the *real* "per-query saving" stats.
+        lat_deltas = [n_lat[i] - b_lat[i] for i in range(len(b_lat))]
+        tot_deltas = [n_tot[i] - b_tot[i] for i in range(len(b_tot))]
+        cost_deltas = [n_cost[i] - b_cost[i] for i in range(len(b_cost))]
+
+        lat_med_save = _med(lat_deltas)
+        lat_mean_save = _mean(lat_deltas)
+        tot_med_save = _med(tot_deltas)
+        tot_mean_save = _mean(tot_deltas)
+        cost_med_save = _med(cost_deltas)
+
+        output_shorter_pct = (1 - bo_med / no_med) * 100 if no_med else 0
+        out_delta_str = (
+            f"**brain answer is {output_shorter_pct:.0f}% shorter**"
+            if output_shorter_pct > 0
+            else f"brain answer is {-output_shorter_pct:.0f}% longer"
+        )
+
+        def _delta_lat(save_med: float, save_mean: float) -> str:
+            if save_med > 0:
+                return f"**brain saves {save_med:.1f}s** (mean {save_mean:.1f}s)"
+            return f"brain uses {-save_med:.1f}s MORE (mean {-save_mean:.1f}s)"
+
+        def _delta_tok(save_med: float, save_mean: float) -> str:
+            if save_med > 0:
+                return f"**brain saves {save_med/1000:.0f}k tokens** (mean {save_mean/1000:.0f}k)"
+            return f"brain uses {-save_med/1000:.0f}k MORE (mean {-save_mean/1000:.0f}k)"
+
+        def _delta_cost(save_med: float) -> str:
+            if save_med >= 0.01:
+                return f"**brain saves ${save_med:.2f}** per query"
+            if save_med <= -0.01:
+                return f"brain costs ~${-save_med:.2f} MORE per query"
+            return "roughly equal"
+
+        fast_facts_lines = [
+            "",
+            f"## Fast facts ({len(rows_with_meta)} A/B rows, paired per-query deltas)",
+            "",
+            f"| Per query              | Brain arm  | No-brain arm | Delta                                    |",
+            f"|------------------------|------------|--------------|------------------------------------------|",
+            f"| Wall-clock (median)    | {bl_med:>6.1f}s   | {nl_med:>6.1f}s     | {_delta_lat(lat_med_save, lat_mean_save)}",
+            f"| Tokens consumed (med)  | {_fmt_tok(bt_med):>8}   | {_fmt_tok(nt_med):>10}   | {_delta_tok(tot_med_save, tot_mean_save)}",
+            f"| Output tokens (med)    | {bo_med:>8.0f}   | {no_med:>10.0f}   | {out_delta_str}",
+        ]
+        if bc_med and nc_med:
+            fast_facts_lines.append(
+                f"| API-equiv cost (med)   | ${bc_med:>7.2f}   | ${nc_med:>9.2f}   | {_delta_cost(cost_med_save)}"
+            )
+        fast_facts_lines.append("")
+
+    lines = [
+        "# Brain eval summary",
+        f"Total rows: {len(rows)}  (robust: {n}, deprecated: {len(rows) - n})",
+        "",
+        "## Headline rates (robust subset)",
+        f"  brain_better:    {brain_wins}  ({pct(brain_wins, n)})",
+        f"  tie:             {ties}  ({pct(ties, n)})",
+        f"  no_brain_better: {losses}  ({pct(losses, n)})",
+        *fast_facts_lines,
+        "## Cost / latency / tokens (rows that captured `totals`)",
+    ]
+    if len(costs) >= 2:
+        lines += [
+            f"  rows with cost data:    {len(costs)}",
+            f"  total cost spent:       ${sum(costs):.4f}",
+            f"  median row cost:        ${_median(costs):.4f}",
+            f"  total wall-clock:       {sum(walls)/1000:.1f}s",
+            f"  median wall-clock/row:  {_median(walls)/1000:.1f}s",
+            f"  total input tokens:     {int(sum(in_tokens)):,}",
+            f"  total output tokens:    {int(sum(out_tokens)):,}",
+            f"  total cache-read tok:   {int(sum(cache_tokens)):,}",
+            "",
+            "## Per-arm median wall-clock",
+            f"  brain arm:    {brain_p50/1000:.1f}s",
+            f"  no-brain arm: {no_brain_p50/1000:.1f}s",
+            f"  delta:        {(no_brain_p50 - brain_p50)/1000:+.1f}s  (positive = brain faster)",
+            "",
+        ]
+    else:
+        lines += [
+            f"  (only {len(costs)} row(s) with cost data — continuous-loop "
+            f"`cli:claude+tools` rows populate this, accumulating over time)",
+            "",
+        ]
+    lines += [
+        "## By question_class",
+        *[f"  {k}: {v}" for k, v in by_class.most_common()],
+        "",
+        "## By backend",
+        *[f"  {k}: {v}" for k, v in by_backend.most_common()],
+        "",
+        "## By trigger",
+        *[f"  {k}: {v}" for k, v in by_trigger.most_common()],
+        "",
+        f"## Brain losses on internal/mixed ({len(loss_rows)}) — candidates to patch",
+    ]
+    if include_examples:
+        for r in loss_rows[-15:]:
+            lines.append(f"  - {r.get('question', '')[:90]}")
+            lines.append(f"    why: {r.get('reason', '')[:140]}")
+    return "\n".join(lines)
+
+
 def _startup_warmup() -> None:
     """Eagerly load fastembed + vector index in a background thread so the
     stdio handshake isn't blocked but the first user search doesn't pay the
@@ -508,6 +781,11 @@ def _startup_warmup() -> None:
 def main() -> None:
     if os.environ.get("BRAIN_MCP_SELF_TEST") == "1":
         print(brain_audit())
+        return
+    if os.environ.get("BRAIN_EVAL_DISABLE") == "1":
+        # No-brain baseline subprocess in continuous eval — exit cleanly so
+        # the child claude session runs without any brain tools.
+        print("[brain-mcp] BRAIN_EVAL_DISABLE=1 — exiting (no-brain baseline).", file=sys.stderr, flush=True)
         return
     try:
         _ensure_repo()
