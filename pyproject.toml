@@ -13,10 +13,12 @@ authors = [{ name = "brainincorp" }]
 dependencies = [
   "mcp>=1.0.0",
   "fastembed>=0.7.0",
+  "questionary>=2.0.0",
 ]
 
 [project.scripts]
 brain-mcp = "brain_mcp.server:main"
+brein = "brain_mcp.cli:main"
 
 [project.urls]
 Homepage = "https://brainincorp.com"
