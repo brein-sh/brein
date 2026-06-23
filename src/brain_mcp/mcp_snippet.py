@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 import sys
-from pathlib import Path
 
 from ._user_config import BreinConfig
 
@@ -13,14 +12,10 @@ CLIENTS = ("claude", "cursor", "codex", "generic")
 
 
 def _launcher_command() -> list[str]:
-    """Path to brain-mcp launcher. Prefer the console script; fall back to scripts/brain-mcp.sh."""
+    """Path to brain-mcp launcher: console script if on PATH, else `python -m`."""
     bin_path = shutil.which("brain-mcp")
     if bin_path:
         return [bin_path]
-    repo_root = Path(__file__).resolve().parents[2]
-    sh = repo_root / "scripts" / "brain-mcp.sh"
-    if sh.exists():
-        return [str(sh)]
     return [sys.executable, "-m", "brain_mcp.server"]
 
 

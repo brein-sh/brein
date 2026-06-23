@@ -49,13 +49,7 @@ uv sync
 uv run brain-mcp --help
 ```
 
-For MCP clients, the most reliable current install path is to run the repo-local launcher script:
-
-```bash
-/path/to/brein/scripts/brain-mcp.sh
-```
-
-The script sets a default `BRAIN_REPO` and runs `uv --directory /path/to/brein run brain-mcp`.
+After `uv sync` (or `pip install -e .`), `brein`, `brain-mcp`, and `brain-eval` are on PATH. Run `brein setup` to configure interactively, then `brein doctor` to verify.
 
 ## Create a brain repo
 
@@ -86,22 +80,13 @@ git commit -m "init brain"
 
 ## MCP client config
 
-Copy `examples/brain.mcp.json` and replace both placeholders with absolute paths:
+Generate a ready-to-paste snippet from your `brein setup` config:
 
-```json
-{
-  "mcpServers": {
-    "brain": {
-      "command": "/ABSOLUTE/PATH/TO/brein/scripts/brain-mcp.sh",
-      "env": {
-        "BRAIN_REPO": "/ABSOLUTE/PATH/TO/YOUR/BRAIN_REPO"
-      }
-    }
-  }
-}
+```bash
+brein mcp claude    # or cursor, codex, generic
 ```
 
-Common client config locations vary by client. Use the same `mcpServers` entry anywhere a stdio MCP server is accepted.
+Paste the printed `mcpServers` block into your client's MCP config. The same JSON shape works anywhere a stdio MCP server is accepted.
 
 After restarting your client, ask it to list MCP tools. You should see:
 
@@ -134,21 +119,15 @@ Tool behavior summary:
 | `brain_audit()` | Reports repo cleanliness, docs/frontmatter counts, retrieval log path, and vector index health. |
 | `brain_retrieval_log(...)` | Manually appends retrieval outcome telemetry; search/read/answer also auto-log. |
 
-## CLI roadmap
-
-Website copy points toward:
+## CLI
 
 ```bash
-npx brein init
+brein setup              # interactive wizard (all sections)
+brein setup mcp          # re-run one section
+brein doctor             # ok/warn/fail health checks
+brein mcp claude         # print MCP snippet for a client
+brein config             # show resolved config
 ```
-
-That public CLI/setup flow is not implemented here yet. Planned pieces are tracked in issue #5:
-
-- project/brain repo bootstrap
-- MCP config generation for common clients
-- doctor checks for `uv`, Python, git, permissions, and target repo scripts
-- safer defaults for local-only vs pushed telemetry
-- clearer first-run output
 
 ## Commands
 
@@ -168,14 +147,14 @@ BRAIN_REPO=/path/to/brain BRAIN_MCP_SELF_TEST=1 uv run brain-mcp
 Run local retrieval evals against your target brain repo:
 
 ```bash
-BRAIN_REPO=/path/to/brain uv run python scripts/eval_retrieval.py --limit 20
-BRAIN_REPO=/path/to/brain uv run python scripts/eval_retrieval.py --modes keyword vector hybrid hybrid_rerank --rerank-method heuristic
+BRAIN_REPO=/path/to/brain brain-eval --limit 20
+BRAIN_REPO=/path/to/brain brain-eval --modes keyword vector hybrid hybrid_rerank --rerank-method heuristic
 ```
 
 Compile sanity check:
 
 ```bash
-python3 -m compileall src scripts
+python3 -m compileall src
 ```
 
 ## Configuration
@@ -184,7 +163,7 @@ Core environment variables:
 
 | Env | Default in package | Purpose |
 | --- | --- | --- |
-| `BRAIN_REPO` | `/opt/data/repos/brain` (`scripts/brain-mcp.sh` defaults to `$HOME/.braincorp/brain`) | Target brain repo. Must be a git repo. |
+| `BRAIN_REPO` | `/opt/data/repos/brain` | Target brain repo. Must be a git repo. Override via `brein setup` or env. |
 | `BRAIN_MAX_READ_CHARS` | `80000` | Max content returned by `brain_read`. |
 | `BRAIN_RETRIEVAL_LOG` | `/opt/data/brain-mcp/retrieval-log.jsonl` | JSONL retrieval/tool telemetry path. If inside `BRAIN_REPO`, telemetry flush can commit it. |
 | `BRAIN_TELEMETRY_FLUSH_EVERY` | `10` | Auto-commit/push telemetry every N events when the log is inside the brain repo. |
@@ -260,19 +239,17 @@ $BRAIN_REPO/.brain/eval-log.jsonl
 The manual retrieval eval script scores expected docs for local eval cases:
 
 ```bash
-BRAIN_REPO=/path/to/brain uv run python scripts/eval_retrieval.py --limit 20
+BRAIN_REPO=/path/to/brain brain-eval --limit 20
 ```
 
-`examples/eval-cases.example.json` shows the intended case shape. The script currently reads `evals/brain_retrieval_eval_cases.json`; configurable `--cases` support is not present yet.
+The eval runner falls back to a small built-in case set if `evals/brain_retrieval_eval_cases.json` isn't present.
 
 ## Project layout
 
 ```text
-src/brain_mcp/           MCP server package
-scripts/brain-mcp.sh     repo-local launcher for MCP clients
-scripts/eval_retrieval.py local retrieval eval runner
-examples/brain.mcp.json  sample MCP config
-examples/eval-cases.example.json sample eval case format
+src/brain_mcp/                MCP server package
+src/brain_mcp/cli.py          `brein` CLI entrypoint
+src/brain_mcp/_scripts/       bundled scripts (eval, index, validate)
 ```
 
 ## Contributing
