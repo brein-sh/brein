@@ -1,6 +1,6 @@
 """Continuous on-the-fly A/B eval.
 
-After every brain_answer call, decides whether this query is worth comparing.
+After every brain_evidence call, decides whether this query is worth comparing.
 If yes, spawns a background thread that:
   1. Re-asks the question with brain evidence → "with-brain" answer
   2. Re-asks the question with no evidence    → "no-brain" answer
@@ -31,6 +31,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,7 +43,7 @@ from .config import REPO_PATH
 EVAL_ENABLED = os.environ.get("BRAIN_EVAL_ENABLED", "on").lower() != "off"
 
 # Recursion guard: when we subprocess claude/codex, we set this env var so
-# the child's brain_answer call doesn't trigger another eval.
+# the child's brain_evidence call doesn't trigger another eval.
 EVAL_GUARD_ENV = "BRAIN_EVAL_IN_PROGRESS"
 EVAL_GUARDED = os.environ.get(EVAL_GUARD_ENV) == "1"
 
@@ -100,31 +101,99 @@ def _which_cli() -> str | None:
     return None
 
 
-def _cli_completion(cli: str, prompt: str) -> str:
+def _cli_completion(cli: str, prompt: str, disable_brain: bool = False) -> tuple[str, dict[str, Any]]:
     """Run a headless completion via `<cli> -p <prompt>` in a subprocess.
-    Returns "" on any failure. Sets a recursion-guard env var so a brain
-    call inside the child doesn't loop back into us.
+
+    Returns (text, meta). text is "" on any failure. meta is a dict capturing
+    everything we can observe about the call: wall-clock latency, stdout/stderr
+    sizes, returncode, timeout flag, prompt size, and — for claude — the rich
+    JSON envelope (input/output tokens, cache tokens, cost USD, num_turns,
+    api duration). For codex/gemini we just record the shell-level stats.
     """
     env = os.environ.copy()
     env[EVAL_GUARD_ENV] = "1"
+    if disable_brain:
+        env["BRAIN_EVAL_DISABLE"] = "1"
+    cwd = os.path.expanduser("~")
+    prompt_chars = len(prompt)
+
+    # Prefer claude's structured JSON output — gives us tokens + cost + turns.
+    use_json = (cli == "claude")
+    cmd = [cli, "-p", prompt] + (["--output-format", "json"] if use_json else [])
+
+    meta: dict[str, Any] = {
+        "cli": cli,
+        "disable_brain": disable_brain,
+        "prompt_chars": prompt_chars,
+        "prompt_tokens_est": prompt_chars // 4,
+        "timed_out": False,
+    }
+    t0 = time.perf_counter()
     try:
         r = subprocess.run(
-            [cli, "-p", prompt],
+            cmd,
             capture_output=True,
             text=True,
             timeout=EVAL_CLI_TIMEOUT_S,
             env=env,
+            cwd=cwd,
         )
-        if r.returncode != 0:
-            return ""
-        return (r.stdout or "").strip()
-    except Exception:
-        return ""
+    except subprocess.TimeoutExpired:
+        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        meta["timed_out"] = True
+        meta["returncode"] = None
+        return "", meta
+    except Exception as exc:
+        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        meta["error"] = f"{type(exc).__name__}: {exc}"
+        return "", meta
+
+    meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    meta["returncode"] = r.returncode
+    meta["stdout_chars"] = len(r.stdout or "")
+    meta["stderr_chars"] = len(r.stderr or "")
+
+    if r.returncode != 0:
+        return "", meta
+
+    raw = (r.stdout or "").strip()
+    text = raw
+
+    # Parse claude's JSON envelope when present.
+    if use_json and raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+            text = str(payload.get("result", "") or "").strip()
+            usage = payload.get("usage", {}) or {}
+            meta["input_tokens"] = usage.get("input_tokens")
+            meta["output_tokens"] = usage.get("output_tokens")
+            meta["cache_creation_input_tokens"] = usage.get("cache_creation_input_tokens")
+            meta["cache_read_input_tokens"] = usage.get("cache_read_input_tokens")
+            meta["cost_usd"] = payload.get("total_cost_usd")
+            meta["num_turns"] = payload.get("num_turns")
+            meta["duration_ms"] = payload.get("duration_ms")
+            meta["duration_api_ms"] = payload.get("duration_api_ms")
+            meta["session_id"] = payload.get("session_id")
+            meta["is_error"] = payload.get("is_error", False)
+        except Exception:
+            # Fall back to raw text if envelope parse fails.
+            meta["json_parse_failed"] = True
+
+    meta["answer_chars"] = len(text)
+    meta["answer_tokens_est"] = len(text) // 4
+    return text, meta
 
 
-def _openrouter_completion(prompt: str) -> str:
+def _openrouter_completion(prompt: str) -> tuple[str, dict[str, Any]]:
+    meta: dict[str, Any] = {
+        "cli": None,
+        "openrouter_model": _OR_MODEL,
+        "prompt_chars": len(prompt),
+        "prompt_tokens_est": len(prompt) // 4,
+    }
     if not _OR_KEY:
-        return ""
+        meta["error"] = "no_openrouter_key"
+        return "", meta
     body = {
         "model": _OR_MODEL,
         "messages": [{"role": "user", "content": prompt}],
@@ -142,37 +211,60 @@ def _openrouter_completion(prompt: str) -> str:
         },
         method="POST",
     )
+    t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=_OR_TIMEOUT_S) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return str(data["choices"][0]["message"]["content"])
-    except Exception:
-        return ""
+            text = str(data["choices"][0]["message"]["content"])
+            meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            usage = data.get("usage", {}) or {}
+            meta["input_tokens"] = usage.get("prompt_tokens")
+            meta["output_tokens"] = usage.get("completion_tokens")
+            meta["total_tokens"] = usage.get("total_tokens")
+            meta["answer_chars"] = len(text)
+            meta["answer_tokens_est"] = len(text) // 4
+            return text, meta
+    except Exception as exc:
+        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        meta["error"] = f"{type(exc).__name__}: {exc}"
+        return "", meta
 
 
-def _ask(prompt: str) -> tuple[str, str]:
-    """Run a prompt through the best available backend. Returns (text, backend)."""
+def _ask(prompt: str, disable_brain: bool = False) -> tuple[str, str, dict[str, Any]]:
+    """Run a prompt through the best available backend. Returns (text, backend, meta).
+    disable_brain=True is only meaningful for the CLI backend (sets
+    BRAIN_EVAL_DISABLE=1 on the child process so brain MCP refuses to start).
+    """
     cli = _which_cli()
     if cli:
-        return _cli_completion(cli, prompt), f"cli:{cli}"
-    return _openrouter_completion(prompt), f"openrouter:{_OR_MODEL}"
+        tag = f"cli:{cli}+tools" + (":no-brain" if disable_brain else "")
+        text, meta = _cli_completion(cli, prompt, disable_brain=disable_brain)
+        return text, tag, meta
+    text, meta = _openrouter_completion(prompt)
+    return text, f"openrouter:{_OR_MODEL}", meta
 
 
 # ── Judge ────────────────────────────────────────────────────────────────
-def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str, str]:
+def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str, str, str, dict[str, Any]]:
     prompt = (
         "Compare two AI assistants answering the same question. Pick which is "
         "more helpful, accurate, and specific. If they are equivalent or both "
         "fail, say tie.\n\n"
+        "Also classify the question:\n"
+        "  - internal_only: only answerable with company-specific knowledge "
+        "(internal facts, decisions, people, dates). General training data alone cannot answer.\n"
+        "  - general: answerable from general training-data knowledge alone, no company context needed.\n"
+        "  - mixed: needs both — a general topic with a company-specific angle.\n\n"
         f"Question: {question[:1000]}\n\n"
         f"Answer A (with brain retrieval):\n{brain_answer[:2000]}\n\n"
         f"Answer B (no brain, model knowledge only):\n{no_brain_answer[:2000]}\n\n"
         'Respond with JSON only: {"verdict": "brain_better" | "no_brain_better" | "tie", '
-        '"reason": "one short sentence"}'
+        '"reason": "one short sentence", '
+        '"question_class": "internal_only" | "general" | "mixed"}'
     )
-    raw, _ = _ask(prompt)
+    raw, _, meta = _ask(prompt, disable_brain=True)
     if not raw:
-        return "tie", "judge_unavailable"
+        return "tie", "judge_unavailable", "unknown", meta
     try:
         start = raw.find("{")
         end = raw.rfind("}")
@@ -181,32 +273,59 @@ def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str,
             verdict = parsed.get("verdict", "tie")
             if verdict not in {"brain_better", "no_brain_better", "tie"}:
                 verdict = "tie"
-            return verdict, str(parsed.get("reason", ""))[:240]
+            qclass = parsed.get("question_class", "unknown")
+            if qclass not in {"internal_only", "general", "mixed"}:
+                qclass = "unknown"
+            return verdict, str(parsed.get("reason", ""))[:240], qclass, meta
     except Exception:
         pass
-    return "tie", "judge_parse_error"
+    return "tie", "judge_parse_error", "unknown", meta
 
 
 def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -> None:
-    """Background worker. Generates both answers, judges, appends row."""
+    """Background worker. Generates both answers, judges, appends row.
+
+    Both arms run as full CLI sessions with all default tools (filesystem,
+    grep, web, etc.) — symmetric with the manual brain-vs-repo eval. The
+    *only* difference is whether the brain MCP is available:
+      - brain arm: brain MCP + evidence already injected into the prompt
+      - no-brain arm: BRAIN_EVAL_DISABLE=1 → brain MCP refuses to start
+    """
     brain_prompt = (
-        "You are a knowledge-base assistant. Answer the question using ONLY "
-        "the evidence below. If the evidence doesn't cover it, say so plainly.\n\n"
-        f"Question: {question}\n\nEvidence:\n{evidence_block[:8000]}"
+        "Answer the following question. You have brain knowledge-base evidence "
+        "below, AND you are running in the user's home directory with full "
+        "filesystem and web tools — you can grep, read, and search any "
+        "repos or files you find under here to verify or supplement the "
+        "evidence. If the answer isn't supported, say so plainly.\n\n"
+        f"Question: {question}\n\nEvidence from brain:\n{evidence_block[:8000]}"
     )
     no_brain_prompt = (
-        "Answer the question from general knowledge only. If you don't know, "
-        "say so plainly. No hallucinated specifics.\n\n"
+        "Answer the following question. You are running in the user's home "
+        "directory with full filesystem and web tools — actively explore "
+        "(ls, grep, read) any repos or files you find under here that look "
+        "relevant. Don't give up after one search; navigate into likely "
+        "subdirectories. If after a real search you still can't find it, "
+        "say so plainly — no hallucinated specifics.\n\n"
         f"Question: {question}"
     )
 
-    brain_answer, backend = _ask(brain_prompt)
-    no_brain, _ = _ask(no_brain_prompt)
+    brain_answer, backend, brain_meta = _ask(brain_prompt, disable_brain=False)
+    no_brain, _, no_brain_meta = _ask(no_brain_prompt, disable_brain=True)
 
     if not brain_answer and not no_brain:
         return
 
-    verdict, reason = _judge(question, brain_answer, no_brain)
+    verdict, reason, question_class, judge_meta = _judge(question, brain_answer, no_brain)
+
+    def _num(d: dict[str, Any], k: str) -> float:
+        v = d.get(k)
+        return float(v) if isinstance(v, (int, float)) else 0.0
+
+    total_cost_usd = _num(brain_meta, "cost_usd") + _num(no_brain_meta, "cost_usd") + _num(judge_meta, "cost_usd")
+    total_input_tokens = int(_num(brain_meta, "input_tokens") + _num(no_brain_meta, "input_tokens") + _num(judge_meta, "input_tokens"))
+    total_output_tokens = int(_num(brain_meta, "output_tokens") + _num(no_brain_meta, "output_tokens") + _num(judge_meta, "output_tokens"))
+    total_cache_read_tokens = int(_num(brain_meta, "cache_read_input_tokens") + _num(no_brain_meta, "cache_read_input_tokens") + _num(judge_meta, "cache_read_input_tokens"))
+    total_wall_clock_ms = _num(brain_meta, "latency_ms") + _num(no_brain_meta, "latency_ms") + _num(judge_meta, "latency_ms")
 
     row: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -217,7 +336,20 @@ def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -
         "no_brain_answer": no_brain[:2000],
         "verdict": verdict,
         "reason": reason,
+        "question_class": question_class,
         "backend": backend,
+        # Per-arm metadata — wall-clock, tokens, cost, turns, cache hits, etc.
+        "brain_meta": brain_meta,
+        "no_brain_meta": no_brain_meta,
+        "judge_meta": judge_meta,
+        # Roll-ups for easy aggregation (no nested digging needed).
+        "totals": {
+            "cost_usd": round(total_cost_usd, 6),
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "cache_read_input_tokens": total_cache_read_tokens,
+            "wall_clock_ms": round(total_wall_clock_ms, 1),
+        },
     }
 
     try:

@@ -325,12 +325,17 @@ def brain_read(file_path: str) -> str:
     })
 
 
-@mcp.tool(name="brain_answer")
-@logged("brain_answer")
-def brain_answer(question: str, max_docs: int = 5) -> str:
+@mcp.tool(name="brain_evidence")
+@logged("brain_evidence")
+def brain_evidence(question: str, max_docs: int = 5) -> str:
     """Return an evidence bundle for a question: ranked docs + snippets + citations.
 
-This is intentionally retrieval-grounded, not a hallucinated final answer.
+    This tool does NOT synthesize a final natural-language answer. It returns
+    the docs the client agent should use to write one, with paths to cite.
+
+    Use brain_evidence when you have a question and want grounded context in
+    one round-trip (search + read of top hits). Use brain_search when you only
+    need to know which docs exist on a topic.
     """
     search_raw = brain_search(question, max_results=max_docs)
     search = json.loads(search_raw)

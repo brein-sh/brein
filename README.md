@@ -82,17 +82,7 @@ git add docs/index.md
 git commit -m "init brain"
 ```
 
-For write tools (`brain_update`) to fully pass, the target brain repo currently needs validation/index scripts:
-
-- `scripts/validate_docs.py`
-- `scripts/generate_index.py`
-
-Making that self-contained is planned in issues #1 and #2:
-
-- https://github.com/brein-sh/brein/issues/1
-- https://github.com/brein-sh/brein/issues/2
-
-Until then, search/read/answer/list/classify/audit can still be useful against normal markdown repos; writes may fail if those scripts are absent.
+`brain_update` and `brain_audit` regenerate `docs/index.md` and validate frontmatter using scripts bundled with the brein package — no per-target-repo setup is required. Override with `BRAIN_INDEX_SCRIPT` or `BRAIN_VALIDATE_SCRIPT` if you want to point at custom versions in your own repo.
 
 ## MCP client config
 
@@ -118,7 +108,7 @@ After restarting your client, ask it to list MCP tools. You should see:
 - `brain_list`
 - `brain_search`
 - `brain_read`
-- `brain_answer`
+- `brain_evidence`
 - `brain_update`
 - `brain_audit`
 - `brain_retrieval_log`
@@ -127,7 +117,7 @@ After restarting your client, ask it to list MCP tools. You should see:
 
 Typical agent policy:
 
-1. Use `brain_search` or `brain_answer` before answering questions about company state.
+1. Use `brain_search` or `brain_evidence` before answering questions about company state.
 2. Use `brain_read` for the exact files you cite.
 3. Use `brain_update` after a durable decision, runbook change, or source-of-truth correction.
 4. Do not write secrets, credentials, raw private chats, or uncurated personal facts.
@@ -137,7 +127,7 @@ Tool behavior summary:
 | Tool | Purpose |
 | --- | --- |
 | `brain_search(query, mode="hybrid")` | Find markdown docs using keyword, vector, or hybrid retrieval. Supports `domain`, `tag`, `status`, optional reranking, and vector index rebuild. |
-| `brain_answer(question)` | Returns an evidence bundle, not a final hallucinated answer. The client should answer from the returned evidence and cite paths. Semantics are being clarified in issue #3. |
+| `brain_evidence(question)` | Returns an evidence bundle (ranked docs + snippets + first-2.5k-chars excerpts + citations) for one round-trip grounded retrieval. Does NOT synthesize a final natural-language answer — the client agent writes that from the evidence and cites paths. |
 | `brain_read(file_path)` | Reads a repo-relative file, returns frontmatter and content. Absolute paths and `.git` access are blocked. |
 | `brain_list(directory="docs")` | Lists markdown files under a repo-relative directory. |
 | `brain_update(file_path, content, commit_message, mode)` | Creates/replaces/appends an allowed file, validates the target repo, commits, and pushes to `origin main` in the background. |
@@ -261,7 +251,7 @@ Important caveats:
 
 ## Evals and retrieval quality
 
-`brain_answer` triggers a non-blocking A/B eval when enabled and an inference backend is available. It compares a with-brain answer to a no-brain answer, judges which is better, and appends JSONL rows to:
+`brain_evidence` triggers a non-blocking A/B eval when enabled and an inference backend is available. It compares a with-brain answer to a no-brain answer, judges which is better, and appends JSONL rows to:
 
 ```text
 $BRAIN_REPO/.brain/eval-log.jsonl
@@ -290,9 +280,7 @@ examples/eval-cases.example.json sample eval case format
 Issues and PRs are welcome. Good first areas:
 
 - public setup/doctor/CLI flow: https://github.com/brein-sh/brein/issues/5
-- standalone docs validation/index generation: https://github.com/brein-sh/brein/issues/1 and https://github.com/brein-sh/brein/issues/2
-- `brain_answer` docs/semantics: https://github.com/brein-sh/brein/issues/3
-- multi-brain routing: https://github.com/brein-sh/brein/issues/4
+- cross-brain memory routing as a separate layer: https://github.com/brein-sh/brein/issues/7
 
 Please keep README changes practical and implementation-accurate: if a command is aspirational, label it as roadmap.
 
