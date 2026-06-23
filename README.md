@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://brein.sh"><img src="https://brein.sh/icon.png" alt="brein logo" width="96" height="96"></a>
+  <a href="https://brein.sh"><img src="assets/brain.gif" alt="brein" width="320"></a>
 </p>
 
 <h1 align="center">brein</h1>
