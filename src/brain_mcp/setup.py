@@ -75,14 +75,18 @@ def setup_repo(cfg: BreinConfig) -> BreinConfig:
 
 
 def setup_paths(cfg: BreinConfig) -> BreinConfig:
-    log = questionary.path(
-        "Retrieval log path:",
-        default=cfg.retrieval_log or str(CONFIG_DIR / "retrieval-log.jsonl"),
-    ).ask()
-    idx = questionary.path(
-        "Vector index path:",
-        default=cfg.vector_index or str(CONFIG_DIR / "vector-index.json"),
-    ).ask()
+    # Retrieval log defaults inside the brain repo — that's the only place
+    # telemetry auto-commit works. Vector index stays outside; it's a
+    # recomputable cache that would bloat the repo.
+    log_default = cfg.retrieval_log or (
+        str(Path(cfg.repo_path) / "telemetry" / "retrieval-log.jsonl")
+        if cfg.repo_path
+        else str(CONFIG_DIR / "retrieval-log.jsonl")
+    )
+    idx_default = cfg.vector_index or str(CONFIG_DIR / "vector-index.json")
+
+    log = questionary.path("Retrieval log path:", default=log_default).ask()
+    idx = questionary.path("Vector index path (cache):", default=idx_default).ask()
     if log:
         cfg.retrieval_log = _expand(log)
         Path(cfg.retrieval_log).parent.mkdir(parents=True, exist_ok=True)

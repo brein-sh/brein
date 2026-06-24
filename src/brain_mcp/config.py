@@ -6,11 +6,12 @@ import os
 import re
 from pathlib import Path
 
-REPO_PATH = Path(os.environ.get("BRAIN_REPO", "/opt/data/repos/brain")).resolve()
+_HOME = Path.home()
+REPO_PATH = Path(os.environ.get("BRAIN_REPO", str(_HOME / ".brein" / "brain"))).resolve()
 DOCS_PATH = REPO_PATH / "docs"
 MAX_READ_CHARS = int(os.environ.get("BRAIN_MAX_READ_CHARS", "80000"))
-LOG_PATH = Path(os.environ.get("BRAIN_RETRIEVAL_LOG", "/opt/data/brain-mcp/retrieval-log.jsonl"))
-VECTOR_INDEX_PATH = Path(os.environ.get("BRAIN_VECTOR_INDEX", "/opt/data/brain-mcp/vector-index.json"))
+LOG_PATH = Path(os.environ.get("BRAIN_RETRIEVAL_LOG", str(REPO_PATH / "telemetry" / "retrieval-log.jsonl")))
+VECTOR_INDEX_PATH = Path(os.environ.get("BRAIN_VECTOR_INDEX", str(_HOME / ".brein" / "vector-index.json")))
 EMBEDDING_MODEL_NAME = os.environ.get("BRAIN_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 VECTOR_CHUNK_CHARS = int(os.environ.get("BRAIN_VECTOR_CHUNK_CHARS", "1400"))
 VECTOR_CHUNK_OVERLAP = int(os.environ.get("BRAIN_VECTOR_CHUNK_OVERLAP", "250"))
