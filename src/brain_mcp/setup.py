@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -90,24 +92,37 @@ def setup_paths(cfg: BreinConfig) -> BreinConfig:
     return cfg
 
 
+EMBEDDING_MODELS = [
+    ("BAAI/bge-small-en-v1.5", "English, fast, 384 dims (default)"),
+    ("BAAI/bge-base-en-v1.5", "English, better recall, 768 dims"),
+    ("BAAI/bge-large-en-v1.5", "English, best recall, 1024 dims, slow"),
+    ("intfloat/multilingual-e5-small", "Multilingual, 384 dims"),
+]
+_OTHER = "Other (type model name)"
+
+
 def setup_vector(cfg: BreinConfig) -> BreinConfig:
     try:
         import fastembed  # noqa: F401
-        fastembed_ok = True
     except ImportError:
-        fastembed_ok = False
-
-    if not fastembed_ok:
         questionary.print(
             "  fastembed not installed — embeddings will use the hash fallback.",
             style="fg:#888888",
         )
-    model = questionary.text(
-        "Embedding model:",
-        default=cfg.embedding_model,
-    ).ask()
-    if model:
-        cfg.embedding_model = model
+
+    choices = [questionary.Choice(f"{m}  — {desc}", value=m) for m, desc in EMBEDDING_MODELS]
+    choices.append(questionary.Choice(_OTHER, value=_OTHER))
+    default = next((c for c in choices if c.value == cfg.embedding_model), choices[0])
+
+    pick = questionary.select("Embedding model:", choices=choices, default=default).ask()
+    if pick is None:
+        return cfg
+    if pick == _OTHER:
+        custom = questionary.text("Model name:", default=cfg.embedding_model).ask()
+        if custom:
+            cfg.embedding_model = custom
+    else:
+        cfg.embedding_model = pick
     return cfg
 
 
@@ -130,6 +145,21 @@ def setup_eval(cfg: BreinConfig) -> BreinConfig:
     return cfg
 
 
+def _install_claude_code(snippet_json: str) -> bool:
+    """Use `claude mcp add-json` if the Claude Code CLI is on PATH."""
+    if not shutil.which("claude"):
+        return False
+    server = json.loads(snippet_json)["mcpServers"]["brain"]
+    r = subprocess.run(
+        ["claude", "mcp", "add-json", "brain", json.dumps(server)],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        questionary.print(f"  claude mcp add-json failed: {r.stderr.strip()}", style="fg:#cc0000")
+        return False
+    return True
+
+
 def setup_mcp(cfg: BreinConfig) -> BreinConfig:
     if not cfg.repo_path:
         questionary.print(
@@ -142,8 +172,20 @@ def setup_mcp(cfg: BreinConfig) -> BreinConfig:
     ).ask()
     if not client or client == "skip":
         return cfg
+
+    snippet_json = mcp_snippet.snippet(cfg, client)
+
+    # Claude Code has a native CLI for this — offer auto-install.
+    if client == "claude" and shutil.which("claude"):
+        do_install = questionary.confirm(
+            "Auto-install via `claude mcp add-json`?", default=True
+        ).ask()
+        if do_install and _install_claude_code(snippet_json):
+            questionary.print("  ✓ added to Claude Code", style="fg:#00aa66")
+            return cfg
+
     print()
-    print(mcp_snippet.snippet(cfg, client))
+    print(snippet_json)
     print()
     questionary.print(
         f"  Paste the block above into your {client} MCP config.",
