@@ -64,12 +64,37 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_INSTALL_URL = "git+https://github.com/brein-sh/brein.git"
+
+
+def _self_upgrade_and_reexec() -> None:
+    """`init` semantics: pull the latest brein from main, then re-exec setup.
+    Network failure / missing uv is non-fatal — fall through to in-process setup."""
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("uv"):
+        return
+    print("Upgrading brein from main…")
+    try:
+        subprocess.run(
+            ["uv", "tool", "install", "--force", "--quiet", _INSTALL_URL],
+            check=False, timeout=180,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        print("  upgrade skipped (timeout or uv missing); continuing with current code.", file=sys.stderr)
+        return
+    # Re-exec from the (now-upgraded) on-disk binary so the new code runs.
+    target = shutil.which("brein") or sys.argv[0]
+    os.execv(target, [target, "setup", *sys.argv[2:]])
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # `init` is an alias for `setup` so `npx brein init` works regardless of
-    # whether npx routes to the npm wrapper or the already-installed Python CLI.
     if argv and argv[0] == "init":
-        argv[0] = "setup"
+        _self_upgrade_and_reexec()
+        argv[0] = "setup"  # fallback if exec didn't happen
     args = build_parser().parse_args(argv)
     return args.func(args)
 
