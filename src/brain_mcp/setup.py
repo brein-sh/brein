@@ -12,6 +12,7 @@ from typing import Callable
 import questionary
 
 from . import mcp_install, mcp_snippet
+from ._policy import POLICY_MD
 from ._user_config import CONFIG_DIR, CONFIG_PATH, BreinConfig, load, save
 
 
@@ -205,10 +206,44 @@ def setup_mcp(cfg: BreinConfig) -> BreinConfig:
     return cfg
 
 
+CLAUDE_RULES_PATH = Path.home() / ".claude" / "rules" / "common" / "brein.md"
+
+
+def setup_policy(cfg: BreinConfig) -> BreinConfig:
+    """Install the agent policy that makes brein actually get used.
+
+    Writes to two places:
+      - ~/.claude/rules/common/brein.md (global Claude Code rule)
+      - <BRAIN_REPO>/AGENTS.md (portable, read by Cursor/Codex/etc. in-repo)
+
+    AGENTS.md is left alone if it already exists — could be user-customized.
+    """
+    # Global Claude Code rule — always write (it's "our" file). Backup if changed.
+    CLAUDE_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if CLAUDE_RULES_PATH.exists() and CLAUDE_RULES_PATH.read_text() != POLICY_MD:
+        CLAUDE_RULES_PATH.with_suffix(".md.bak").write_text(CLAUDE_RULES_PATH.read_text())
+    CLAUDE_RULES_PATH.write_text(POLICY_MD)
+    questionary.print(f"  ✓ wrote {CLAUDE_RULES_PATH}", style="fg:#00aa66")
+
+    # Per-repo AGENTS.md — only if absent. Don't clobber user's existing rules.
+    if cfg.repo_path:
+        agents_path = Path(cfg.repo_path) / "AGENTS.md"
+        if agents_path.exists():
+            questionary.print(
+                f"  • {agents_path} already exists — leaving alone",
+                style="fg:#888888",
+            )
+        else:
+            agents_path.write_text(POLICY_MD)
+            questionary.print(f"  ✓ wrote {agents_path}", style="fg:#00aa66")
+    return cfg
+
+
 SECTIONS: tuple[Section, ...] = (
     Section("repo",   "Brain repo location",         setup_repo),
     Section("paths",  "Log & vector index paths",    setup_paths),
     Section("vector", "Embeddings",                  setup_vector),
+    Section("policy", "Agent policy (read/write rules)", setup_policy),
     Section("mcp",    "MCP client snippet",          setup_mcp),
 )
 
