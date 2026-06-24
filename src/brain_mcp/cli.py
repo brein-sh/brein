@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import doctor, mcp_snippet, setup
+from . import _hooks, doctor, mcp_snippet, setup
 from ._user_config import CONFIG_PATH, load
 
 
@@ -61,7 +61,35 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("client", choices=mcp_snippet.CLIENTS)
     m.set_defaults(func=_cmd_mcp)
 
+    h = sub.add_parser("hooks", help="Manage Claude Code hooks")
+    h.add_argument("action", choices=["on", "off", "status", "install"])
+    h.set_defaults(func=_cmd_hooks)
+
     return p
+
+
+def _cmd_hooks(args: argparse.Namespace) -> int:
+    if args.action == "install":
+        try:
+            path = _hooks.install()
+        except RuntimeError as e:
+            print(f"install failed: {e}", file=sys.stderr)
+            return 1
+        print(f"wrote brein hooks into {path}")
+        return 0
+    if args.action == "on":
+        _hooks.set_enabled(True)
+        print("brein hooks: ON")
+        return 0
+    if args.action == "off":
+        _hooks.set_enabled(False)
+        print("brein hooks: OFF (run `brein hooks on` to re-enable)")
+        return 0
+    # status
+    s = _hooks.status()
+    print(f"installed: {s['installed']}")
+    print(f"enabled:   {s['enabled']}")
+    return 0
 
 
 _INSTALL_URL = "git+https://github.com/brein-sh/brein.git"
