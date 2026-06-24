@@ -54,7 +54,42 @@ def _claude_code_install(server: dict) -> InstallResult:
     )
     if r.returncode != 0:
         return InstallResult(False, r.stderr.strip() or r.stdout.strip())
-    return InstallResult(True, "added via `claude mcp add-json --scope user`")
+    cleared = _clear_brain_from_disabled_lists()
+    detail = "added via `claude mcp add-json --scope user`"
+    if cleared:
+        detail += f" (cleared {cleared} per-project disable)"
+    return InstallResult(True, detail)
+
+
+def _clear_brain_from_disabled_lists() -> int:
+    """Remove 'brain' from every projects.<X>.disabledMcpServers list in
+    ~/.claude.json. Otherwise a prior user-disable in /mcp keeps brain off
+    after install. Returns the number of projects touched."""
+    path = Path.home() / ".claude.json"
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return 0  # silently skip; we never destructively edit broken state
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        return 0
+    changed = 0
+    for proj in projects.values():
+        if not isinstance(proj, dict):
+            continue
+        disabled = proj.get("disabledMcpServers")
+        if isinstance(disabled, list) and "brain" in disabled:
+            proj["disabledMcpServers"] = [s for s in disabled if s != "brain"]
+            changed += 1
+    if not changed:
+        return 0
+    shutil.copy2(path, path.with_suffix(".json.bak"))
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
+    return changed
 
 
 # ── Claude Desktop (JSON file) ───────────────────────────────────────────────
