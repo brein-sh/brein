@@ -135,19 +135,6 @@ def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
     return {"changed": True, "pushed": "pending", "clean": status == "", "dirty_status": status, "head": head}
 
 
-@mcp.tool(name="brain_list")
-@logged("brain_list")
-def brain_list(directory: str = "docs", max_results: int = 500) -> str:
-    """List markdown files in the brain."""
-    _ensure_repo()
-    files = []
-    for path in _iter_markdown(directory) or []:
-        files.append(str(path.relative_to(REPO_PATH)))
-        if len(files) >= max_results:
-            break
-    return _json({"repo": str(REPO_PATH), "files": files, "truncated": len(files) >= max_results})
-
-
 @mcp.tool(name="brain_search")
 @logged("brain_search")
 def brain_search(
@@ -306,7 +293,8 @@ def brain_search(
     })
 
 
-@mcp.tool(name="brain_read")
+# Internal helper — used by brain_evidence. No longer exposed as an MCP tool;
+# agents should use their normal Read/Glob/Grep tools against the brain repo.
 @logged("brain_read")
 def brain_read(file_path: str) -> str:
     """Read a specific brain file by repo-relative path."""
