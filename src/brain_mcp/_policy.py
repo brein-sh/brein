@@ -14,14 +14,44 @@ can't do: semantic search and policy-gated writes.
 
 ## Tools
 
-- `brain_search` — semantic / hybrid retrieval. Use when grep would miss
-  paraphrases or conceptual queries. For exact-string lookups, just grep.
+- `brain_search` — semantic-only retrieval (embeddings). Use for paraphrased
+  or conceptual queries. **Returns a status payload (not results) if the
+  vector index isn't ready** — see "When brain_search returns status" below.
 - `brain_evidence` — one-shot ranked-docs-plus-citations bundle for grounded
   question answering. Calls search + reads top hits in one round-trip.
+- `brain_index_status` — inspect or kick the background index builder.
+  Use when brain_search keeps returning non-ready and you want progress
+  or want to force a restart (`restart_if_stalled=True`).
 - `brain_update` — REQUIRED for all writes. Enforces secret blocking,
   allowed-path policy, atomic validate → commit → push. Never write to the
   brain repo via Edit / Write / shell — go through `brain_update`.
 - `brain_audit` — repo health (cleanliness, doc counts, log/index status).
+
+## When `brain_search` returns status (not results)
+
+`brain_search` is embeddings-only. If the index isn't ready, it returns:
+
+    {{
+      "status": "building" | "stalled" | "missing" | "empty",
+      "action": "use_grep",
+      "hint": "...",
+      "repo_path": "{repo_path}",
+      "progress": "448/2167 (20%)",
+      "auto_spawned_worker": true
+    }}
+
+When you see this, do this:
+
+1. **Use your normal Grep / Read / Glob tools** over `{repo_path}/docs` —
+   the brain is just a directory of markdown, you don't need brain_search
+   to read it. Grep for keywords, read the files you find.
+2. **Retry `brain_search` later** in the same conversation. The worker
+   auto-spawns on missing/stalled, so by the next round-trip it may be
+   `ready` (or further along).
+3. If status is `stalled` and you want a fresh start, call
+   `brain_index_status(restart_if_stalled=True)`.
+4. **Never treat status=building as "no results exist"** — the docs are
+   right there in the repo, just not semantically indexed yet.
 
 ## Session Start — Read the Brain
 
