@@ -206,7 +206,7 @@ def _openrouter_completion(prompt: str) -> tuple[str, dict[str, Any]]:
         headers={
             "Authorization": f"Bearer {_OR_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://brainincorp.com",
+            "HTTP-Referer": "https://brein.sh",
             "X-Title": "brain-mcp-eval",
         },
         method="POST",

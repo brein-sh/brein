@@ -9,7 +9,7 @@ description = "A policy-aware MCP server for an org-wide knowledge brain that li
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "brainincorp" }]
+authors = [{ name = "brein" }]
 dependencies = [
   "mcp>=1.0.0",
   "fastembed>=0.7.0",
@@ -22,8 +22,8 @@ brein = "brain_mcp.cli:main"
 brain-eval = "brain_mcp._scripts.eval_retrieval:main"
 
 [project.urls]
-Homepage = "https://brainincorp.com"
-Repository = "https://github.com/brainincorp/brain-mcp"
+Homepage = "https://brein.sh"
+Repository = "https://github.com/brein-sh/brein"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/brain_mcp"]
