@@ -17,7 +17,7 @@ from pathlib import Path
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 DISABLE_FLAG = Path.home() / ".brein" / "disabled"
 
-_DISABLE_CHECK = '[ -f "$HOME/.brein/disabled" ] && exit 0; '
+_DISABLE_CHECK = '[ "${BREIN_GATE:-on}" = "off" ] && exit 0; [ -f "$HOME/.brein/disabled" ] && exit 0; '
 _SEARCH_FLAG = '/tmp/claude-brein-search-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_FLAG = '/tmp/claude-brein-write-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_REMINDED = '/tmp/claude-brein-write-reminded-${CLAUDE_CODE_SESSION_ID:-default}'
