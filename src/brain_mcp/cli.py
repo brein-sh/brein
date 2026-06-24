@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `init` is an alias for `setup` so `npx brein init` works regardless of
+    # whether npx routes to the npm wrapper or the already-installed Python CLI.
+    if argv and argv[0] == "init":
+        argv[0] = "setup"
     args = build_parser().parse_args(argv)
     return args.func(args)
 
