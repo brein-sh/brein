@@ -33,10 +33,19 @@ def _entry(matcher: str, command: str) -> dict:
 
 def entries() -> dict[str, list[dict]]:
     """All brein hook entries keyed by Claude Code event type."""
+    # Read the brain via brain_search OR via plain grep/Read/cat on the
+    # brain repo path — both count as "the agent consulted the brain".
+    # Tool input arrives as JSON on stdin; substring-match the repo path.
     read_gate = (
         f'{_DISABLE_CHECK}'
         f'F="{_SEARCH_FLAG}"; [ -f "$F" ] && exit 0; '
-        "echo '[BLOCKED] Call mcp__brain__brain_search first (or `brein hooks off`).' >&2; "
+        'INPUT=$(cat); '
+        'REPO="${BRAIN_REPO:-$HOME/.brein/brain}"; '
+        'case "$INPUT" in '
+        '  *"$REPO"*) touch "$F"; exit 0 ;; '
+        '  *.brein/brain*) touch "$F"; exit 0 ;; '
+        'esac; '
+        "echo '[BLOCKED] Read the brain first: mcp__brain__brain_search OR Grep/Read inside '\"$REPO\"' (or `brein hooks off`).' >&2; "
         "exit 2"
     )
     write_reminder = (
