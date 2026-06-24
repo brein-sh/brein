@@ -26,6 +26,29 @@ def _expand(path: str) -> str:
     return str(Path(path).expanduser().resolve())
 
 
+def _is_non_empty_dir(p: Path) -> bool:
+    return p.exists() and p.is_dir() and any(p.iterdir())
+
+
+def _resolve_existing_dest(dest: Path, *, label: str) -> str | None:
+    """If dest exists and is non-empty, ask the user what to do.
+    Returns the path to use, or None to abort this branch."""
+    if not _is_non_empty_dir(dest):
+        return str(dest)
+    is_repo = (dest / ".git").exists()
+    msg = f"{dest} already exists and is non-empty"
+    msg += " (looks like a git repo)." if is_repo else "."
+    questionary.print(f"  {msg}", style="fg:#cc8800")
+    choices = ["Use it as-is", "Pick a different path", "Abort"]
+    pick = questionary.select(f"What to do for {label}?", choices=choices).ask()
+    if pick == "Use it as-is":
+        return str(dest)
+    if pick == "Pick a different path":
+        new = questionary.path(f"New path for {label}:").ask()
+        return _expand(new) if new else None
+    return None
+
+
 def setup_repo(cfg: BreinConfig) -> BreinConfig:
     mode = questionary.select(
         "Brain repo:",
@@ -47,27 +70,42 @@ def setup_repo(cfg: BreinConfig) -> BreinConfig:
 
     elif mode == "Clone from git":
         url = questionary.text("Git URL:").ask()
-        dest = questionary.path(
+        dest_input = questionary.path(
             "Clone into:",
             default=str(Path.home() / ".brein" / "brain"),
         ).ask()
-        if not (url and dest):
+        if not (url and dest_input):
             return cfg
-        dest = _expand(dest)
-        subprocess.run(["git", "clone", url, dest], check=True)
-        cfg.repo_path = dest
+        resolved = _resolve_existing_dest(Path(_expand(dest_input)), label="clone target")
+        if resolved is None:
+            return cfg
+        if _is_non_empty_dir(Path(resolved)):
+            # User chose "Use it as-is" — skip the clone.
+            cfg.repo_path = resolved
+        else:
+            try:
+                subprocess.run(["git", "clone", url, resolved], check=True)
+            except subprocess.CalledProcessError as e:
+                questionary.print(f"  git clone failed (exit {e.returncode})", style="fg:#cc0000")
+                return cfg
+            cfg.repo_path = resolved
 
     elif mode == "Create new empty repo":
-        dest = questionary.path(
+        dest_input = questionary.path(
             "Create repo at:",
             default=cfg.repo_path or str(Path.home() / ".brein" / "brain"),
         ).ask()
-        if not dest:
+        if not dest_input:
             return cfg
-        dest_path = Path(_expand(dest))
+        dest_path = Path(_expand(dest_input))
+        dest_path.mkdir(parents=True, exist_ok=True)
         (dest_path / "docs").mkdir(parents=True, exist_ok=True)
         if not (dest_path / ".git").exists():
-            subprocess.run(["git", "init", "-q", str(dest_path)], check=True)
+            try:
+                subprocess.run(["git", "init", "-q", str(dest_path)], check=True)
+            except subprocess.CalledProcessError as e:
+                questionary.print(f"  git init failed (exit {e.returncode})", style="fg:#cc0000")
+                return cfg
         cfg.repo_path = str(dest_path)
 
     return cfg
