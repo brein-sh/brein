@@ -37,7 +37,7 @@ def setup_repo(cfg: BreinConfig) -> BreinConfig:
     if mode == "Use existing path":
         path = questionary.path(
             "Path to existing brain repo:",
-            default=cfg.repo_path or str(Path.home() / ".braincorp" / "brain"),
+            default=cfg.repo_path or str(Path.home() / ".brein" / "brain"),
             only_directories=True,
         ).ask()
         if not path:
@@ -48,7 +48,7 @@ def setup_repo(cfg: BreinConfig) -> BreinConfig:
         url = questionary.text("Git URL:").ask()
         dest = questionary.path(
             "Clone into:",
-            default=str(Path.home() / ".braincorp" / "brain"),
+            default=str(Path.home() / ".brein" / "brain"),
         ).ask()
         if not (url and dest):
             return cfg
@@ -59,7 +59,7 @@ def setup_repo(cfg: BreinConfig) -> BreinConfig:
     elif mode == "Create new empty repo":
         dest = questionary.path(
             "Create repo at:",
-            default=cfg.repo_path or str(Path.home() / ".braincorp" / "brain"),
+            default=cfg.repo_path or str(Path.home() / ".brein" / "brain"),
         ).ask()
         if not dest:
             return cfg
