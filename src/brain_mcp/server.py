@@ -260,6 +260,71 @@ def brain_search(
     })
 
 
+@mcp.tool(name="brain_index_status")
+@logged("brain_index_status")
+def brain_index_status(restart_if_stalled: bool = False, force_rebuild: bool = False) -> str:
+    """Inspect and optionally restart the brain's vector index builder.
+
+    Use this when brain_search returned status != 'ready' and you want to
+    know how far along the build is, or kick off a fresh build:
+
+      restart_if_stalled=True   spawn a new worker iff status is 'stalled'
+                                or 'missing'. No-op if already 'building'.
+      force_rebuild=True        kill any existing worker and start fresh.
+                                Use sparingly; full rebuild is expensive.
+
+    Returns the resolved status + progress + repo path. Agents should
+    keep using Grep/Read over the repo while status != 'ready'.
+    """
+    import os
+    import signal
+
+    status, state = index_state.resolve_status()
+
+    if force_rebuild:
+        if state and state.worker_pid:
+            try:
+                os.kill(state.worker_pid, signal.SIGTERM)
+            except OSError:
+                pass
+        index_state.clear()
+        pid = index_worker.spawn_detached()
+        return _json({
+            "status": "building",
+            "worker_pid": pid,
+            "action": "use_grep",
+            "repo_path": str(REPO_PATH),
+            "note": "fresh rebuild started; previous worker terminated if any",
+        })
+
+    if restart_if_stalled and status in {"stalled", "missing"}:
+        pid = index_worker.spawn_detached()
+        status, state = index_state.resolve_status()
+        return _json({
+            "status": status,
+            "worker_pid": pid,
+            "action": "use_grep" if status != "ready" else "search_now",
+            "repo_path": str(REPO_PATH),
+            "progress": _progress_str(state),
+            "note": "background worker spawned",
+        })
+
+    return _json({
+        "status": status,
+        "action": "search_now" if status == "ready" else "use_grep",
+        "repo_path": str(REPO_PATH),
+        "progress": _progress_str(state),
+        "worker_pid": state.worker_pid if state else None,
+        "last_error": (state.last_error.splitlines()[0] if state and state.last_error else None),
+    })
+
+
+def _progress_str(state) -> str | None:
+    if not state or not state.total:
+        return None
+    return f"{state.done}/{state.total} ({int(100 * state.done / state.total)}%)"
+
+
 # Internal helper — used by brain_evidence. No longer exposed as an MCP tool;
 # agents should use their normal Read/Glob/Grep tools against the brain repo.
 @logged("brain_read")
