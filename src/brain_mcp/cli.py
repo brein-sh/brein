@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import _hooks, doctor, mcp_snippet, setup
+from . import _hooks, doctor, index_state, index_worker, mcp_snippet, setup
 from ._user_config import CONFIG_PATH, load
 
 
@@ -65,7 +65,35 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("action", choices=["on", "off", "status", "install"])
     h.set_defaults(func=_cmd_hooks)
 
+    i = sub.add_parser("index", help="Manage the vector index")
+    i.add_argument("action", choices=["build", "spawn", "status", "reset"])
+    i.set_defaults(func=_cmd_index)
+
     return p
+
+
+def _cmd_index(args: argparse.Namespace) -> int:
+    if args.action == "build":
+        return index_worker.run()
+    if args.action == "spawn":
+        pid = index_worker.spawn_detached()
+        print(f"index worker spawned (pid={pid}); tail ~/.brein/index-worker.log")
+        return 0
+    if args.action == "reset":
+        index_state.clear()
+        print("index state cleared")
+        return 0
+    # status
+    status, state = index_state.resolve_status()
+    print(f"status: {status}")
+    if state:
+        print(f"  started_at: {state.started_at}")
+        print(f"  updated_at: {state.updated_at}")
+        print(f"  worker_pid: {state.worker_pid}")
+        print(f"  progress:   {state.done}/{state.total}")
+        if state.last_error:
+            print(f"  last_error: {state.last_error.splitlines()[0]}")
+    return 0
 
 
 def _cmd_hooks(args: argparse.Namespace) -> int:
