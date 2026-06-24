@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -30,23 +31,32 @@ def _is_non_empty_dir(p: Path) -> bool:
     return p.exists() and p.is_dir() and any(p.iterdir())
 
 
-def _resolve_existing_dest(dest: Path, *, label: str) -> str | None:
-    """If dest exists and is non-empty, ask the user what to do.
-    Returns the path to use, or None to abort this branch."""
+def _resolve_clone_dest(dest: Path) -> str | None:
+    """For 'Clone from git': if dest is non-empty, offer delete-and-re-clone
+    or pick a different path. Returns an empty path ready for `git clone`,
+    or None to abort."""
     if not _is_non_empty_dir(dest):
         return str(dest)
     is_repo = (dest / ".git").exists()
     msg = f"{dest} already exists and is non-empty"
     msg += " (looks like a git repo)." if is_repo else "."
     questionary.print(f"  {msg}", style="fg:#cc8800")
-    choices = ["Use it as-is", "Pick a different path", "Abort"]
-    pick = questionary.select(f"What to do for {label}?", choices=choices).ask()
-    if pick == "Use it as-is":
-        return str(dest)
+    pick = questionary.select(
+        "What to do for clone target?",
+        choices=[f"Delete {dest} and re-clone", "Pick a different path", "Abort"],
+    ).ask()
+    if pick is None or pick == "Abort":
+        return None
     if pick == "Pick a different path":
-        new = questionary.path(f"New path for {label}:").ask()
-        return _expand(new) if new else None
-    return None
+        new = questionary.path("New path for clone target:").ask()
+        if not new:
+            return None
+        return _resolve_clone_dest(Path(_expand(new)))
+    # Delete branch — destructive, ask once more to confirm.
+    if not questionary.confirm(f"Really delete {dest}?", default=False).ask():
+        return None
+    shutil.rmtree(dest)
+    return str(dest)
 
 
 def setup_repo(cfg: BreinConfig) -> BreinConfig:
@@ -76,19 +86,15 @@ def setup_repo(cfg: BreinConfig) -> BreinConfig:
         ).ask()
         if not (url and dest_input):
             return cfg
-        resolved = _resolve_existing_dest(Path(_expand(dest_input)), label="clone target")
+        resolved = _resolve_clone_dest(Path(_expand(dest_input)))
         if resolved is None:
             return cfg
-        if _is_non_empty_dir(Path(resolved)):
-            # User chose "Use it as-is" — skip the clone.
-            cfg.repo_path = resolved
-        else:
-            try:
-                subprocess.run(["git", "clone", url, resolved], check=True)
-            except subprocess.CalledProcessError as e:
-                questionary.print(f"  git clone failed (exit {e.returncode})", style="fg:#cc0000")
-                return cfg
-            cfg.repo_path = resolved
+        try:
+            subprocess.run(["git", "clone", url, resolved], check=True)
+        except subprocess.CalledProcessError as e:
+            questionary.print(f"  git clone failed (exit {e.returncode})", style="fg:#cc0000")
+            return cfg
+        cfg.repo_path = resolved
 
     elif mode == "Create new empty repo":
         dest_input = questionary.path(
