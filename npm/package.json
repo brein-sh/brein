@@ -10,7 +10,7 @@
     "directory": "npm"
   },
   "bin": {
-    "brein": "./bin/brein.js"
+    "brein": "bin/brein.js"
   },
   "files": [
     "bin/",
@@ -19,5 +19,11 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["mcp", "llm", "knowledge-base", "rag", "brain"]
+  "keywords": [
+    "mcp",
+    "llm",
+    "knowledge-base",
+    "rag",
+    "brain"
+  ]
 }
