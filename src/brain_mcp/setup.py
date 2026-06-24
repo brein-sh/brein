@@ -12,7 +12,7 @@ from typing import Callable
 
 import questionary
 
-from . import _policy, mcp_install, mcp_snippet
+from . import _hooks, _policy, mcp_install, mcp_snippet
 from ._user_config import CONFIG_DIR, CONFIG_PATH, BreinConfig, load, save
 
 
@@ -251,11 +251,26 @@ def setup_policy(cfg: BreinConfig) -> BreinConfig:
     return cfg
 
 
+def setup_hooks(cfg: BreinConfig) -> BreinConfig:
+    """Install brein's Claude Code hooks (read gate + write reminder).
+    Existing brein entries are replaced; unrelated hooks are preserved.
+    Toggle later with `brein hooks on|off`."""
+    try:
+        path = _hooks.install()
+    except RuntimeError as e:
+        questionary.print(f"  ✗ hooks install failed: {e}", style="fg:#cc0000")
+        return cfg
+    questionary.print(f"  ✓ wrote brein hooks into {path}", style="fg:#00aa66")
+    questionary.print("    toggle: `brein hooks off` / `brein hooks on`", style="fg:#888888")
+    return cfg
+
+
 SECTIONS: tuple[Section, ...] = (
     Section("repo",   "Brain repo location",         setup_repo),
     Section("paths",  "Log & vector index paths",    setup_paths),
     Section("vector", "Embeddings",                  setup_vector),
     Section("policy", "Agent policy (read/write rules)", setup_policy),
+    Section("hooks",  "Claude Code hooks (gate + reminder)", setup_hooks),
     Section("mcp",    "MCP client snippet",          setup_mcp),
 )
 
