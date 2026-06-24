@@ -94,9 +94,15 @@ def parse_iso_date(value: str) -> datetime.date | None:
 
 def check_staleness(
     path: Path, fm: dict[str, str], today: datetime.date
-) -> list[str]:
-    """Return staleness/cycle errors for one doc."""
+) -> tuple[list[str], list[str]]:
+    """Return (errors, warnings) for staleness/cycle on one doc.
+
+    Errors = structural problems (malformed dates, unknown cycle) — block writes.
+    Warnings = age-out (review cycle exceeded) — print to stderr but don't block.
+    A stale unrelated doc shouldn't reject every brain_update across the repo.
+    """
     errs: list[str] = []
+    warns: list[str] = []
     raw_date = fm.get("last_reviewed", "").strip()
     raw_cycle = fm.get("review_cycle", "").strip().lower()
 
@@ -111,19 +117,19 @@ def check_staleness(
             f"{path}: unknown review_cycle '{raw_cycle}' "
             f"(expected one of: {', '.join(sorted(REVIEW_CYCLE_DAYS))})"
         )
-        return errs
+        return errs, warns
 
     if last_reviewed is None or not raw_cycle:
-        return errs
+        return errs, warns
 
     cycle_days = REVIEW_CYCLE_DAYS[raw_cycle]
     age = (today - last_reviewed).days
     if age > cycle_days:
-        errs.append(
+        warns.append(
             f"{path}: stale — last_reviewed {raw_date} exceeds {raw_cycle} review cycle "
             f"({age} days > {cycle_days})"
         )
-    return errs
+    return errs, warns
 
 
 def check_status(path: Path, fm: dict[str, str]) -> list[str]:
@@ -171,6 +177,7 @@ def check_hub_readme_entries() -> list[str]:
 
 def main() -> int:
     errors: list[str] = []
+    warnings: list[str] = []
     today = datetime.date.today()
 
     for base in CURATED_DIRS:
@@ -206,7 +213,9 @@ def main() -> int:
                 if not missing_field:
                     fm = parse_frontmatter_block(text) or {}
                     errors.extend(check_status(path, fm))
-                    errors.extend(check_staleness(path, fm, today))
+                    stale_errs, stale_warns = check_staleness(path, fm, today)
+                    errors.extend(stale_errs)
+                    warnings.extend(stale_warns)
             if path.is_relative_to(ROOT / "skills") and path.name == "SKILL.md":
                 if not text.startswith("---"):
                     errors.append(f"{path}: skill frontmatter must start at byte 0")
@@ -218,12 +227,18 @@ def main() -> int:
 
     errors.extend(check_hub_readme_entries())
 
+    # Warnings (e.g. stale review cycle) print to stderr and do NOT block.
+    # A doc aging out shouldn't reject unrelated writes across the repo.
+    if warnings:
+        for w in warnings:
+            print(f"WARN: {w}", file=sys.stderr)
+
     if errors:
         for err in errors:
             print(err)
         return 1
 
-    print("docs validation passed")
+    print(f"docs validation passed ({len(warnings)} warnings)")
     return 0
 
 
