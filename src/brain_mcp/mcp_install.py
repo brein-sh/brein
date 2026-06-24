@@ -12,9 +12,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+import tomli_w
 
 
 @dataclass
@@ -112,10 +115,48 @@ def _cursor_install(server: dict) -> InstallResult:
     return _merge_mcp_json(_cursor_path(), server)
 
 
+# ── Codex CLI (TOML file) ────────────────────────────────────────────────────
+
+def _codex_path() -> Path:
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _codex_detect() -> bool:
+    return _codex_path().parent.exists() or shutil.which("codex") is not None
+
+
+def _codex_install(server: dict) -> InstallResult:
+    """Merge brain into [mcp_servers.brain] in ~/.codex/config.toml."""
+    path = _codex_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            data = tomllib.loads(path.read_text())
+        except tomllib.TOMLDecodeError as e:
+            return InstallResult(False, f"existing config.toml is invalid TOML: {e}")
+        shutil.copy2(path, path.with_suffix(".toml.bak"))
+    else:
+        data = {}
+    servers = data.setdefault("mcp_servers", {})
+    if not isinstance(servers, dict):
+        return InstallResult(False, "existing mcp_servers is not a table")
+    entry: dict = {"command": server["command"]}
+    if server.get("args"):
+        entry["args"] = server["args"]
+    if server.get("env"):
+        entry["env"] = server["env"]
+    servers["brain"] = entry
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_bytes(tomli_w.dumps(data).encode("utf-8"))
+    tmp.replace(path)
+    return InstallResult(True, f"wrote {path}")
+
+
 CLIENTS: tuple[Client, ...] = (
     Client("claude-code",    "Claude Code",    _claude_code_detect,    _claude_code_install),
     Client("claude-desktop", "Claude Desktop", _claude_desktop_detect, _claude_desktop_install, "restart Claude Desktop"),
     Client("cursor",         "Cursor",         _cursor_detect,         _cursor_install,         "restart Cursor"),
+    Client("codex",          "Codex",          _codex_detect,          _codex_install,          "restart Codex"),
 )
 
 
