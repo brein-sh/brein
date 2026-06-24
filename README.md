@@ -47,11 +47,11 @@ brain-eval --limit 20   # local retrieval evals against $BRAIN_REPO
 | --- | --- |
 | `brain_search(query, mode="hybrid")` | Keyword / vector / hybrid retrieval with optional rerank. |
 | `brain_evidence(question)` | Ranked docs + snippets + excerpts + citations in one round-trip. The client agent writes the final answer. |
-| `brain_read(file_path)` | Repo-relative read with frontmatter. Absolute paths and `.git` are blocked. |
-| `brain_list(directory="docs")` | List markdown under a repo-relative dir. |
 | `brain_update(file_path, content, commit_message, mode)` | Write to an allowed path, validate, commit, push. |
 | `brain_audit()` | Repo cleanliness, doc/frontmatter counts, log + index health. |
-| `brain_retrieval_log(...)` | Telemetry; search/read also auto-log. |
+| `brain_retrieval_log(...)` | Telemetry; search auto-logs. |
+
+For plain reads / listings, agents use their normal file tools (`Read`, `Glob`, `Grep`) against the brain repo directly — the MCP only mediates what plain tools can't do: semantic search and policy-gated writes.
 
 Write policy: paths under `docs/`, `skills/`, `templates/`, plus `AGENTS.md` / `README.md` / `CONTRIBUTING.md` at the root. Secrets are pattern-blocked.
 
