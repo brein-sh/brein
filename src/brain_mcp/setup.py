@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Callable
 
 import questionary
 
-from . import mcp_snippet
+from . import mcp_install, mcp_snippet
 from ._user_config import CONFIG_DIR, CONFIG_PATH, BreinConfig, load, save
 
 
@@ -149,50 +148,39 @@ def setup_eval(cfg: BreinConfig) -> BreinConfig:
     return cfg
 
 
-def _install_claude_code(snippet_json: str) -> bool:
-    """Use `claude mcp add-json` if the Claude Code CLI is on PATH."""
-    if not shutil.which("claude"):
-        return False
-    server = json.loads(snippet_json)["mcpServers"]["brain"]
-    r = subprocess.run(
-        ["claude", "mcp", "add-json", "brain", json.dumps(server)],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        questionary.print(f"  claude mcp add-json failed: {r.stderr.strip()}", style="fg:#cc0000")
-        return False
-    return True
-
-
 def setup_mcp(cfg: BreinConfig) -> BreinConfig:
     if not cfg.repo_path:
         questionary.print(
             "  Skipping — run `brein setup repo` first.", style="fg:#cc8800"
         )
         return cfg
-    client = questionary.select(
-        "Generate MCP snippet for which client?",
-        choices=[*mcp_snippet.CLIENTS, "skip"],
-    ).ask()
-    if not client or client == "skip":
-        return cfg
 
-    snippet_json = mcp_snippet.snippet(cfg, client)
+    server = json.loads(mcp_snippet.snippet(cfg, "generic"))["mcpServers"]["brain"]
+    detected = mcp_install.detect_installed()
 
-    # Claude Code has a native CLI for this — offer auto-install.
-    if client == "claude" and shutil.which("claude"):
-        do_install = questionary.confirm(
-            "Auto-install via `claude mcp add-json`?", default=True
-        ).ask()
-        if do_install and _install_claude_code(snippet_json):
-            questionary.print("  ✓ added to Claude Code", style="fg:#00aa66")
+    if detected:
+        names = ", ".join(c.label for c in detected)
+        questionary.print(f"  Detected: {names}", style="fg:#888888")
+        if questionary.confirm("Install brein to all detected clients?", default=True).ask():
+            restart_notes: list[str] = []
+            for c in detected:
+                r = c.install(server)
+                if r.ok:
+                    questionary.print(f"  ✓ {c.label} — {r.detail}", style="fg:#00aa66")
+                    if c.restart_note:
+                        restart_notes.append(c.restart_note)
+                else:
+                    questionary.print(f"  ✗ {c.label} — {r.detail}", style="fg:#cc0000")
+            if restart_notes:
+                questionary.print(f"\n  Next: {'; '.join(restart_notes)}", style="fg:#888888")
             return cfg
 
+    # No detected clients, or user declined auto-install. Print for manual paste.
     print()
-    print(snippet_json)
+    print(mcp_snippet.snippet(cfg, "generic"))
     print()
     questionary.print(
-        f"  Paste the block above into your {client} MCP config.",
+        "  Paste the block above into your client's MCP config.",
         style="fg:#888888",
     )
     return cfg
