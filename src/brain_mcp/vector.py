@@ -81,6 +81,8 @@ def _embed_texts(texts: list[str]) -> tuple[list[list[float]], str]:
     backend = _get_embedder_backend()
     if _EMBEDDER is not None:
         try:
+            # ponytail: no `parallel=` → in-process ONNX runtime threading.
+            # Any parallel=N triggers multiprocessing which fork-bombs without a __main__ guard.
             return [_norm_vector(list(vec)) for vec in _EMBEDDER.embed(texts)], backend
         except Exception as exc:  # optional model runtime can fail independently
             backend = f"hash-fallback:{type(exc).__name__}"
@@ -145,7 +147,7 @@ def _vector_signature(paths: list[Path]) -> dict[str, Any]:
 _INDEX_CACHE: dict[str, Any] = {"index": None, "global_sig": None, "fps": None, "directory": None}
 
 
-def _load_vector_index(directory: str = "docs", force_rebuild: bool = False) -> dict[str, Any]:
+def _load_vector_index(directory: str = "docs", force_rebuild: bool = False, progress_cb=None) -> dict[str, Any]:
     paths = list(_iter_markdown(directory) or [])
     current_fps = {str(p.relative_to(REPO_PATH)): _file_fingerprint(p) for p in paths}
     global_sig = _global_signature()
@@ -207,13 +209,27 @@ def _load_vector_index(directory: str = "docs", force_rebuild: bool = False) -> 
             pending.append(item)
             texts_to_embed.append(prefix + chunk["text"])
     backend = _get_embedder_backend()
-    batch_size = int(os.environ.get("BRAIN_EMBED_BATCH_SIZE", "8"))
-    for i in range(0, len(texts_to_embed), batch_size):
-        batch_texts = texts_to_embed[i:i + batch_size]
-        vectors, batch_backend = _embed_texts(batch_texts)
-        backend = batch_backend
-        for item, vector in zip(pending[i:i + batch_size], vectors):
-            entries.append({**item, "vector": vector})
+    total = len(texts_to_embed)
+    if _EMBEDDER is not None and total > 0:
+        # ponytail: in-process ONNX threading (no `parallel=`). Stream the
+        # generator so we don't materialize every vector at once.
+        done = 0
+        for item, vec in zip(pending, _EMBEDDER.embed(texts_to_embed)):
+            entries.append({**item, "vector": _norm_vector(list(vec))})
+            done += 1
+            if progress_cb and (done % 64 == 0 or done == total):
+                progress_cb(done, total)
+    else:
+        # Hash fallback path (no fastembed) — small loop, no parallel benefit
+        batch_size = int(os.environ.get("BRAIN_EMBED_BATCH_SIZE", "128"))
+        for i in range(0, total, batch_size):
+            batch_texts = texts_to_embed[i:i + batch_size]
+            vectors, batch_backend = _embed_texts(batch_texts)
+            backend = batch_backend
+            for item, vector in zip(pending[i:i + batch_size], vectors):
+                entries.append({**item, "vector": vector})
+            if progress_cb:
+                progress_cb(min(i + batch_size, total), total)
     index = {
         "version": 2,
         "built_at": datetime.now(timezone.utc).isoformat(),
