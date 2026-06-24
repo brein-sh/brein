@@ -23,7 +23,7 @@ class BreinConfig:
     retrieval_log: str = ""
     vector_index: str = ""
     embedding_model: str = "BAAI/bge-small-en-v1.5"
-    eval_enabled: bool = False
+    eval_enabled: bool = True
     eval_host_order: list[str] = field(default_factory=lambda: ["claude", "codex", "gemini"])
 
     def as_env(self) -> dict[str, str]:
