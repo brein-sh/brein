@@ -1,6 +1,6 @@
 {
   "name": "brein",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "npx wrapper for brein — installs the Python MCP server and runs the setup wizard.",
   "license": "MIT",
   "homepage": "https://brein.sh",

@@ -4,6 +4,7 @@
 
 const { spawnSync, spawn } = require("node:child_process");
 const { platform } = require("node:os");
+const path = require("node:path");
 
 const REPO_URL = "git+https://github.com/brein-sh/brein.git";
 const MIN_PY = [3, 11];
@@ -95,13 +96,27 @@ function installBrein(branch) {
   }
 }
 
-function ensureOnPath() {
-  if (!which("brein")) {
-    console.error(C.yellow("!") + " `brein` not on PATH after install.");
-    console.error("  → run: " + C.bold("uv tool update-shell") + "  (then restart your shell)");
-    console.error("    or add ~/.local/bin to PATH manually.");
-    process.exit(1);
+function uvToolBin() {
+  // Resolve the installed brein binary directly via uv. PATH lookup is
+  // unreliable inside `npx` (which prepends its own .bin and finds this
+  // wrapper instead of the Python CLI → recursion).
+  const r = spawnSync("uv", ["tool", "dir", "--bin"], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const dir = r.stdout.trim();
+  const exe = platform() === "win32" ? "brein.exe" : "brein";
+  return path.join(dir, exe);
+}
+
+function resolveInstalledBrein() {
+  const direct = uvToolBin();
+  if (direct) {
+    const fs = require("node:fs");
+    if (fs.existsSync(direct)) return direct;
   }
+  // Fallback: trust PATH (only safe outside npx, but worth a try).
+  const onPath = which("brein");
+  if (onPath && onPath !== process.argv[1]) return onPath;
+  return null;
 }
 
 function usage() {
@@ -132,18 +147,24 @@ function main() {
     const branch = branchIdx >= 0 ? rest[branchIdx + 1] : null;
     preflight();
     installBrein(branch);
-    ensureOnPath();
+    const installed = resolveInstalledBrein();
+    if (!installed) {
+      console.error(C.red("✗") + " brein installed but binary not found.");
+      console.error("  → run: " + C.bold("uv tool update-shell"));
+      process.exit(1);
+    }
     console.log(C.bold("\nRunning ") + C.bold("brein setup") + C.bold("...\n"));
-    execReplace("brein", ["setup"]);
+    execReplace(installed, ["setup"]);
     return;
   }
 
   // Forward anything else to the installed CLI.
-  if (!which("brein")) {
+  const installed = resolveInstalledBrein();
+  if (!installed) {
     console.error(C.red("✗") + " brein is not installed. Run: npx brein init");
     process.exit(1);
   }
-  execReplace("brein", [cmd, ...rest]);
+  execReplace(installed, [cmd, ...rest]);
 }
 
 main();
