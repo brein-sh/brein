@@ -53,7 +53,7 @@ def _resolve_clone_dest(dest: Path) -> str | None:
             return None
         return _resolve_clone_dest(Path(_expand(new)))
     # Delete branch — destructive, ask once more to confirm.
-    if not questionary.confirm(f"Really delete {dest}?", default=False).ask():
+    if not questionary.confirm(f"Really delete {dest}?", default=True).ask():
         return None
     shutil.rmtree(dest)
     return str(dest)
