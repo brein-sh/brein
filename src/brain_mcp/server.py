@@ -40,6 +40,7 @@ from .config import (
     RERANK_MAX_TOP_K,
     VECTOR_INDEX_PATH,
 )
+from . import index_state, index_worker
 from .rerank import _maybe_rerank
 from .telemetry import logged
 from .shared import (
@@ -135,6 +136,52 @@ def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
     return {"changed": True, "pushed": "pending", "clean": status == "", "dirty_status": status, "head": head}
 
 
+def _index_status_payload() -> str | None:
+    """Return a status payload if the index isn't usable; None if it's ready.
+
+    Auto-spawns the background worker when status is missing or stalled, so
+    the agent only needs to grep until the next call returns 'ready'. The
+    spawn is fire-and-forget; we don't wait.
+    """
+    status, state = index_state.resolve_status()
+    if status == "ready":
+        return None
+
+    auto_spawned = False
+    if status in {"missing", "stalled"}:
+        try:
+            index_worker.spawn_detached()
+            auto_spawned = True
+            status, state = index_state.resolve_status()
+        except Exception as exc:  # spawning is best-effort
+            return _json({
+                "status": "stalled",
+                "action": "use_grep",
+                "hint": f"Could not spawn index worker ({exc}). Use Grep/Read over {REPO_PATH} until brain_search returns status=ready.",
+                "repo_path": str(REPO_PATH),
+                "last_error": getattr(state, "last_error", None),
+            })
+
+    progress = None
+    if state and state.total:
+        progress = f"{state.done}/{state.total} ({int(100 * state.done / state.total)}%)"
+
+    payload = {
+        "status": status,
+        "action": "use_grep",
+        "hint": (
+            f"Index is {status}. Use Grep/Read over {REPO_PATH}/docs until "
+            f"brain_search returns status=ready. Call brain_search again later to retry."
+        ),
+        "repo_path": str(REPO_PATH),
+        "progress": progress,
+        "auto_spawned_worker": auto_spawned,
+    }
+    if state and state.last_error:
+        payload["last_error"] = state.last_error.splitlines()[0]
+    return _json(payload)
+
+
 @mcp.tool(name="brain_search")
 @logged("brain_search")
 def brain_search(
@@ -144,148 +191,68 @@ def brain_search(
     tag: str | None = None,
     status: str | None = None,
     max_results: int = 10,
-    mode: str = "hybrid",
     rerank: bool = False,
     rerank_top_k: int = 25,
     rerank_method: str = "llm",
-    force_rebuild_vector_index: bool = False,
 ) -> str:
-    """Hybrid brain search: keyword/BM25-ish plus vector semantic retrieval.
+    """Semantic brain search via embeddings.
 
-    mode can be `hybrid`, `keyword`, or `vector`. Hybrid preserves exact-match
-    strengths while adding semantic recall for questions whose wording differs
-    from the docs.
+    Returns ranked vector hits over the configured brain repo. brain_search
+    is embeddings-only — for literal/keyword lookup, agents should use their
+    normal Grep/Read tools over $BRAIN_REPO directly.
+
+    If the index isn't ready (missing, building, stalled, empty), returns a
+    structured status payload with action='use_grep' instead of degraded
+    results. The agent should fall back to Grep over the repo until status
+    flips to 'ready'. A missing/stalled index auto-spawns a background
+    builder; the agent never has to wait.
     """
     _ensure_repo()
     if not query.strip():
         return _json({"error": "query is required"})
-    if mode not in {"hybrid", "keyword", "vector"}:
-        return _json({"error": "mode must be hybrid, keyword, or vector"})
     if rerank_method not in {"llm", "heuristic"}:
         rerank_method = "llm"
 
+    gate = _index_status_payload()
+    if gate is not None:
+        return gate
+
     toks = _tokens(query) or [query.lower()]
-    keyword_results: list[dict[str, Any]] = []
-    for path in _iter_markdown(directory) or []:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        fm = _frontmatter(text)
-        if not _matches_filters(path, fm, domain, status, tag):
-            continue
-        score = _score(path, text, fm, toks)
-        if score <= 0:
-            continue
-        keyword_results.append({
-            "path": str(path.relative_to(REPO_PATH)),
-            "keyword_score": float(score),
-            "title": fm.get("title", path.stem),
-            "status": fm.get("status"),
-            "tags": fm.get("tags", []),
-            "source_of_truth": fm.get("source_of_truth"),
-            "snippets": _line_snippets(text, toks),
-        })
-    keyword_results.sort(key=lambda r: r["keyword_score"], reverse=True)
+    vector_results, vector_meta = _best_vector_hits(
+        query=query,
+        directory=directory,
+        domain=domain,
+        tag=tag,
+        status=status,
+        limit=max(max_results * 4, min(rerank_top_k if rerank else 25, RERANK_MAX_TOP_K), 25),
+        force_rebuild=False,
+    )
+    vector_meta["enabled"] = True
 
-    vector_results: list[dict[str, Any]] = []
-    vector_meta: dict[str, Any] = {"enabled": False}
-    if mode in {"hybrid", "vector"}:
-        vector_results, vector_meta = _best_vector_hits(
-            query=query,
-            directory=directory,
-            domain=domain,
-            tag=tag,
-            status=status,
-            limit=max(max_results * 4, min(rerank_top_k if rerank else 25, RERANK_MAX_TOP_K), 25),
-            force_rebuild=force_rebuild_vector_index,
-        )
-        vector_meta["enabled"] = True
-
-    if mode == "keyword":
-        results = []
-        for r in keyword_results:
-            results.append({**r, "score": round(r["keyword_score"], 3), "retrieval": "keyword"})
-        results, rerank_meta = _maybe_rerank(query, toks, results, rerank, rerank_method, rerank_top_k)
-        top = results[:max_results]
-        _append_retrieval_log(query, [r["path"] for r in top], None, "search_keyword", kind="search", extra={"mode": mode})
-        return _json({"query": query, "tokens": toks, "mode": mode, "rerank": rerank_meta, "results": top, "truncated": len(results) > max_results})
-
-    if mode == "vector":
-        results = []
-        for r in vector_results:
-            snippets = [r.get("vector_snippet")] if r.get("vector_snippet") else []
-            results.append({
-                "path": r["path"],
-                "score": round(r["vector_score"], 6),
-                "vector_score": round(r["vector_score"], 6),
-                "title": r.get("title"),
-                "status": r.get("status"),
-                "tags": r.get("tags", []),
-                "source_of_truth": r.get("source_of_truth"),
-                "snippets": snippets,
-                "retrieval": "vector",
-            })
-        results, rerank_meta = _maybe_rerank(query, toks, results, rerank, rerank_method, rerank_top_k)
-        top = results[:max_results]
-        _append_retrieval_log(query, [r["path"] for r in top], None, "search_vector", kind="search", extra={"mode": mode, "backend": vector_meta.get("backend")})
-        return _json({"query": query, "tokens": toks, "mode": mode, "vector": vector_meta, "rerank": rerank_meta, "results": top, "truncated": len(results) > max_results})
-
-    # Hybrid fusion. Normalize keyword and vector scores independently before
-    # combining so one scale cannot dominate the other.
-    max_kw = max([r["keyword_score"] for r in keyword_results], default=0.0) or 1.0
-    max_vec = max([r["vector_score"] for r in vector_results], default=0.0) or 1.0
-    fused: dict[str, dict[str, Any]] = {}
-    for r in keyword_results:
-        item = fused.setdefault(r["path"], {**r, "keyword_score": 0.0, "vector_score": 0.0, "retrieval": []})
-        item.update({k: v for k, v in r.items() if k not in {"keyword_score", "snippets"}})
-        item["keyword_score"] = r["keyword_score"]
-        item["snippets"] = r.get("snippets", [])
-        item["retrieval"].append("keyword")
+    results = []
     for r in vector_results:
-        item = fused.setdefault(r["path"], {
+        snippets = [r.get("vector_snippet")] if r.get("vector_snippet") else []
+        results.append({
             "path": r["path"],
+            "score": round(r["vector_score"], 6),
+            "vector_score": round(r["vector_score"], 6),
             "title": r.get("title"),
             "status": r.get("status"),
             "tags": r.get("tags", []),
             "source_of_truth": r.get("source_of_truth"),
-            "keyword_score": 0.0,
-            "vector_score": 0.0,
-            "snippets": [],
-            "retrieval": [],
+            "snippets": snippets,
+            "retrieval": "vector",
         })
-        item["vector_score"] = r["vector_score"]
-        if r.get("vector_snippet") and not item.get("snippets"):
-            item["snippets"] = [r["vector_snippet"]]
-        item["retrieval"].append("vector")
-    results = []
-    for item in fused.values():
-        kw_norm = item["keyword_score"] / max_kw if item["keyword_score"] > 0 else 0.0
-        vec_norm = item["vector_score"] / max_vec if item["vector_score"] > 0 else 0.0
-        fused_score = HYBRID_KEYWORD_WEIGHT * kw_norm + HYBRID_VECTOR_WEIGHT * vec_norm
-        if str(item.get("source_of_truth", "")).lower() == "true":
-            fused_score += 0.02
-        results.append({
-            "path": item["path"],
-            "score": round(fused_score, 6),
-            "keyword_score": round(item["keyword_score"], 3),
-            "vector_score": round(item["vector_score"], 6),
-            "title": item.get("title"),
-            "status": item.get("status"),
-            "tags": item.get("tags", []),
-            "source_of_truth": item.get("source_of_truth"),
-            "snippets": item.get("snippets", []),
-            "retrieval": sorted(set(item.get("retrieval", []))),
-        })
-    results.sort(key=lambda r: r["score"], reverse=True)
     results, rerank_meta = _maybe_rerank(query, toks, results, rerank, rerank_method, rerank_top_k)
     top = results[:max_results]
-    _append_retrieval_log(query, [r["path"] for r in top], None, "search_hybrid", kind="search", extra={"mode": mode, "backend": vector_meta.get("backend")})
+    _append_retrieval_log(
+        query, [r["path"] for r in top], None, "search_vector",
+        kind="search", extra={"backend": vector_meta.get("backend")},
+    )
     return _json({
+        "status": "ready",
         "query": query,
         "tokens": toks,
-        "mode": mode,
-        "weights": {"keyword": HYBRID_KEYWORD_WEIGHT, "vector": HYBRID_VECTOR_WEIGHT},
         "vector": vector_meta,
         "rerank": rerank_meta,
         "results": top,
