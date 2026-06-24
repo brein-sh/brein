@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import _hooks, doctor, index_state, index_worker, mcp_snippet, setup
+from . import _hooks, consistency, doctor, index_state, index_worker, mcp_snippet, setup
 from ._user_config import CONFIG_PATH, load
 
 
@@ -69,7 +69,42 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("action", choices=["build", "spawn", "status", "reset"])
     i.set_defaults(func=_cmd_index)
 
+    cc = sub.add_parser("consistency", help="Background consistency checker for brain writes")
+    cc.add_argument("action", choices=["check", "spawn", "status", "clear"])
+    cc.add_argument("path", nargs="?", help="repo-relative or absolute path to the written doc (for check/spawn)")
+    cc.set_defaults(func=_cmd_consistency)
+
     return p
+
+
+def _cmd_consistency(args: argparse.Namespace) -> int:
+    if args.action in {"check", "spawn"} and not args.path:
+        print(f"path is required for `consistency {args.action}`", file=sys.stderr)
+        return 2
+    if args.action == "check":
+        finding = consistency.run_check(args.path)
+        if finding is None:
+            print("ok — no finding emitted (no nearby docs, or judge said 'ok')")
+            return 0
+        import json as _json
+        print(_json.dumps(finding.to_json(), indent=2))
+        return 0
+    if args.action == "spawn":
+        pid = consistency.spawn_detached(args.path)
+        print(f"consistency worker spawned (pid={pid}); tail ~/.brein/consistency-worker.log")
+        return 0
+    if args.action == "clear":
+        n = consistency.clear_queue()
+        print(f"cleared {n} findings from queue")
+        return 0
+    # status
+    q = consistency.read_queue()
+    print(f"queued findings: {len(q)}")
+    for f in q[-10:]:
+        print(f"  • [{f.kind}/{f.confidence}] {f.write_path} — {f.summary}")
+        if f.related_paths:
+            print(f"    related: {', '.join(f.related_paths[:3])}")
+    return 0
 
 
 def _cmd_index(args: argparse.Namespace) -> int:

@@ -40,7 +40,7 @@ from .config import (
     RERANK_MAX_TOP_K,
     VECTOR_INDEX_PATH,
 )
-from . import index_state, index_worker
+from . import consistency, index_state, index_worker
 from .rerank import _maybe_rerank
 from .telemetry import logged
 from .shared import (
@@ -417,7 +417,49 @@ def brain_update(file_path: str, content: str, commit_message: str, mode: str = 
             "path": rel,
             "rolled_back": True,
         })
-    return _json({"path": rel, "validation": validation, **result})
+    # Fire-and-forget consistency check on the just-written doc. Detached,
+    # never blocks the response. Findings land in ~/.brein/consistency-queue.jsonl
+    # and are pulled via brain_consistency_status.
+    consistency_pid = None
+    try:
+        consistency_pid = consistency.spawn_detached(rel)
+    except Exception:
+        pass
+
+    return _json({
+        "path": rel,
+        "validation": validation,
+        "consistency_check_pid": consistency_pid,
+        **result,
+    })
+
+
+@mcp.tool(name="brain_consistency_status")
+@logged("brain_consistency_status")
+def brain_consistency_status(max_results: int = 20, clear: bool = False) -> str:
+    """Return pending consistency findings from background brain_update checks.
+
+    Each brain_update spawns a detached worker that compares the new doc
+    against its nearest semantic neighbors via an LLM judge. Findings can be:
+
+      - auto_merge      near-duplicate of an existing doc (suggest merging)
+      - contradiction   facts disagree with an existing doc
+      - unresolved      potential conflict, judge unsure — worth user review
+
+    Agents should call this periodically (e.g. once per session or after a
+    burst of writes) and surface unresolved/contradiction findings to the
+    user. `clear=True` empties the queue after returning the current set.
+    """
+    queue = consistency.read_queue()
+    payload = {
+        "queue_size": len(queue),
+        "findings": [f.to_json() for f in queue[-max_results:]],
+        "queue_path": str(consistency.QUEUE_PATH),
+    }
+    if clear:
+        consistency.clear_queue()
+        payload["cleared"] = True
+    return _json(payload)
 
 
 @mcp.tool(name="brain_audit")
