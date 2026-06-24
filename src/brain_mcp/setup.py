@@ -167,25 +167,6 @@ def setup_vector(cfg: BreinConfig) -> BreinConfig:
     return cfg
 
 
-def setup_eval(cfg: BreinConfig) -> BreinConfig:
-    enabled = questionary.confirm(
-        "Enable retrieval eval?",
-        default=cfg.eval_enabled,
-    ).ask()
-    cfg.eval_enabled = bool(enabled)
-    if cfg.eval_enabled:
-        order = questionary.checkbox(
-            "Host CLI fallback order (space to select, enter to confirm):",
-            choices=[
-                questionary.Choice(c, checked=(c in cfg.eval_host_order))
-                for c in ("claude", "codex", "gemini")
-            ],
-        ).ask()
-        if order:
-            cfg.eval_host_order = order
-    return cfg
-
-
 def setup_mcp(cfg: BreinConfig) -> BreinConfig:
     if not cfg.repo_path:
         questionary.print(
@@ -228,7 +209,6 @@ SECTIONS: tuple[Section, ...] = (
     Section("repo",   "Brain repo location",         setup_repo),
     Section("paths",  "Log & vector index paths",    setup_paths),
     Section("vector", "Embeddings",                  setup_vector),
-    Section("eval",   "Retrieval eval",              setup_eval),
     Section("mcp",    "MCP client snippet",          setup_mcp),
 )
 
