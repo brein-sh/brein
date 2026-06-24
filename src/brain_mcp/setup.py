@@ -254,14 +254,16 @@ def setup_policy(cfg: BreinConfig) -> BreinConfig:
 def setup_hooks(cfg: BreinConfig) -> BreinConfig:
     """Install brein's Claude Code hooks (read gate + write reminder).
     Existing brein entries are replaced; unrelated hooks are preserved.
-    Toggle later with `brein hooks on|off`."""
+    Always leaves hooks enabled — clears ~/.brein/disabled if present.
+    Toggle off later with `brein hooks off`."""
     try:
         path = _hooks.install()
     except RuntimeError as e:
         questionary.print(f"  ✗ hooks install failed: {e}", style="fg:#cc0000")
         return cfg
-    questionary.print(f"  ✓ wrote brein hooks into {path}", style="fg:#00aa66")
-    questionary.print("    toggle: `brein hooks off` / `brein hooks on`", style="fg:#888888")
+    _hooks.set_enabled(True)  # clear any prior `brein hooks off`
+    questionary.print(f"  ✓ wrote brein hooks into {path} (enabled)", style="fg:#00aa66")
+    questionary.print("    toggle off later: `brein hooks off`", style="fg:#888888")
     return cfg
 
 
