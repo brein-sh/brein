@@ -199,15 +199,17 @@ def main() -> int:
                 if not text.startswith("---"):
                     errors.append(f"{path}: missing frontmatter block")
                     continue
-                if not re.search(r"\n---\s*\n", text[3:]):
+                fm_close = re.search(r"\n---\s*\n", text[3:])
+                if not fm_close:
                     errors.append(f"{path}: frontmatter closing --- not found")
+                fm_block = text[3 : 3 + fm_close.start()] if fm_close else text
                 missing_field = False
                 is_okf_reserved = path.name in OKF_RESERVED_FILENAMES
                 for pattern in REQUIRED_DOC_PATTERNS:
                     # OKF reserved files (index.md, log.md) don't need `type`.
                     if pattern == "type:" and is_okf_reserved:
                         continue
-                    if pattern not in text:
+                    if not re.search(rf"^{re.escape(pattern)}", fm_block, re.MULTILINE):
                         errors.append(f"{path}: missing {pattern}")
                         missing_field = True
                 if not missing_field:
