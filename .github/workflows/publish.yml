@@ -89,7 +89,7 @@ jobs:
           if pip index versions brein-mcp 2>/dev/null | grep -q "$VERSION"; then
             echo "brein-mcp $VERSION already on PyPI; skipping."
           else
-            twine upload --non-interactive dist/*
+            twine upload --non-interactive --verbose dist/*
           fi
 
   publish-npm:
