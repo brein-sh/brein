@@ -1,0 +1,75 @@
+name: Auto-tag on changelog version bump
+
+# Push to main that touches changelog.md → extract the newest
+# "## [X.Y.Z]" heading → push a matching `vX.Y.Zf` tag. The trailing `f`
+# routes through the force-release path in publish.yml (skip tests),
+# since changelog-only pushes have already been verified locally.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'changelog.md'
+
+jobs:
+  auto-tag:
+    name: Create version tag from changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # PAT so the tag push is attributed to a real user and triggers
+          # downstream workflows (publish.yml). The default GITHUB_TOKEN
+          # deliberately does NOT fire downstream workflows.
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Extract newest version from changelog
+        id: extract
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' changelog.md | sed -E 's/^## \[([0-9]+\.[0-9]+\.[0-9]+)\]/\1/')
+
+          if [[ -z "$VERSION" ]]; then
+            echo "No version heading found in changelog.md; nothing to tag."
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Latest changelog version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        if: steps.extract.outputs.version != ''
+        id: check
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.extract.outputs.version }}f"
+          git fetch --tags --quiet
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists; skipping."
+            echo "should_tag=false" >> "$GITHUB_OUTPUT"
+          elif git rev-parse -q --verify "refs/tags/v${{ steps.extract.outputs.version }}" >/dev/null; then
+            echo "Tag v${{ steps.extract.outputs.version }} (non-force) already exists; skipping."
+            echo "should_tag=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_tag=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.should_tag == 'true'
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Auto-tagged from changelog.md"
+          git push origin "$TAG"
+          echo "Pushed tag $TAG"

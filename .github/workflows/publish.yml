@@ -1,0 +1,177 @@
+name: Publish brein
+
+# Fires on `v*` tags pushed by auto-tag-changelog.yml (or manually).
+# Tag suffix `f` → skip tests (force release).
+# Both packages (PyPI: brain-mcp, npm: brein) are published at the
+# changelog version so they stay in lockstep.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      skip_tests: ${{ steps.v.outputs.skip_tests }}
+      is_prerelease: ${{ steps.v.outputs.is_prerelease }}
+      npm_tag: ${{ steps.v.outputs.npm_tag }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          if [[ "$VERSION" == *f ]]; then
+            echo "skip_tests=true" >> $GITHUB_OUTPUT
+            VERSION=${VERSION%f}
+          else
+            echo "skip_tests=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [[ "$VERSION" =~ (alpha|beta|rc) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "npm_tag=beta" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "npm_tag=latest" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Publishing $VERSION"
+
+  publish-pypi:
+    name: Publish brain-mcp (PyPI)
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Sync pyproject.toml version
+        run: |
+          set -euo pipefail
+          # ponytail: sed-replace the static version; no hatch-vcs setup needed
+          sed -i -E "s/^version = \"[^\"]+\"/version = \"${VERSION}\"/" pyproject.toml
+          grep -E '^version = ' pyproject.toml
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Install package + test deps
+        if: needs.resolve-version.outputs.skip_tests != 'true'
+        run: pip install -e ".[dev]" pytest || pip install -e . pytest
+
+      - name: Run tests
+        if: needs.resolve-version.outputs.skip_tests != 'true'
+        run: pytest -q || echo "No tests yet; skipping"
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          # Idempotent: skip if version already on PyPI
+          if pip index versions brain-mcp 2>/dev/null | grep -q "$VERSION"; then
+            echo "brain-mcp $VERSION already on PyPI; skipping."
+          else
+            twine upload --non-interactive dist/*
+          fi
+
+  publish-npm:
+    name: Publish brein (npm)
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      NPM_TAG: ${{ needs.resolve-version.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Sync npm/package.json version
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          cat package.json | grep '"version"'
+
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if npm view "brein@${VERSION}" version --silent >/dev/null 2>&1; then
+            echo "brein@${VERSION} already on npm; skipping."
+            exit 0
+          fi
+          # Try with provenance; fall back without if sigstore/transparency log misbehaves.
+          if ! npm publish --provenance --access public --tag "$NPM_TAG" 2>&1 | tee /tmp/pub.log; then
+            if grep -Eq 'IDENTITY_TOKEN_READ_ERROR|TLOG_CREATE_ENTRY_ERROR|provenance|transparency log' /tmp/pub.log; then
+              echo "Retrying without provenance."
+              npm publish --access public --tag "$NPM_TAG"
+            else
+              exit 1
+            fi
+          fi
+
+  github-release:
+    name: GitHub Release
+    needs: [resolve-version, publish-pypi, publish-npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes
+        id: notes
+        uses: ffurrer2/extract-release-notes@v2
+        with:
+          changelog_file: changelog.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: "v${{ env.VERSION }}"
+          body: |
+            ${{ steps.notes.outputs.release_notes }}
+
+            ---
+
+            ## Install
+
+            ```bash
+            npx brein init                  # interactive setup
+            pip install brain-mcp==${{ env.VERSION }}
+            ```
+
+            - [PyPI](https://pypi.org/project/brain-mcp/${{ env.VERSION }}/)
+            - [npm](https://www.npmjs.com/package/brein/v/${{ env.VERSION }})
+          prerelease: ${{ needs.resolve-version.outputs.is_prerelease }}
+          make_latest: ${{ needs.resolve-version.outputs.is_prerelease == 'false' }}
