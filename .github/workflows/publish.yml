@@ -2,7 +2,7 @@ name: Publish brein
 
 # Fires on `v*` tags pushed by auto-tag-changelog.yml (or manually).
 # Tag suffix `f` → skip tests (force release).
-# Both packages (PyPI: brain-mcp, npm: brein) are published at the
+# Both packages (PyPI: brein-mcp, npm: brein) are published at the
 # changelog version so they stay in lockstep.
 
 on:
@@ -45,7 +45,7 @@ jobs:
           echo "Publishing $VERSION"
 
   publish-pypi:
-    name: Publish brain-mcp (PyPI)
+    name: Publish brein-mcp (PyPI)
     needs: resolve-version
     runs-on: ubuntu-latest
     permissions:
@@ -86,8 +86,8 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: |
           # Idempotent: skip if version already on PyPI
-          if pip index versions brain-mcp 2>/dev/null | grep -q "$VERSION"; then
-            echo "brain-mcp $VERSION already on PyPI; skipping."
+          if pip index versions brein-mcp 2>/dev/null | grep -q "$VERSION"; then
+            echo "brein-mcp $VERSION already on PyPI; skipping."
           else
             twine upload --non-interactive dist/*
           fi
@@ -168,10 +168,10 @@ jobs:
 
             ```bash
             npx brein init                  # interactive setup
-            pip install brain-mcp==${{ env.VERSION }}
+            pip install brein-mcp==${{ env.VERSION }}
             ```
 
-            - [PyPI](https://pypi.org/project/brain-mcp/${{ env.VERSION }}/)
+            - [PyPI](https://pypi.org/project/brein-mcp/${{ env.VERSION }}/)
             - [npm](https://www.npmjs.com/package/brein/v/${{ env.VERSION }})
           prerelease: ${{ needs.resolve-version.outputs.is_prerelease }}
           make_latest: ${{ needs.resolve-version.outputs.is_prerelease == 'false' }}

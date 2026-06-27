@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "brain-mcp"
+name = "brein-mcp"
 version = "0.5.0"
 description = "A policy-aware MCP server for an org-wide knowledge brain that lives in a git repo."
 readme = "README.md"

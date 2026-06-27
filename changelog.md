@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.3] - 2026-06-27
+
+### Changed
+- PyPI package renamed from `brain-mcp` to `brein-mcp` (the original name was held by an unrelated maintainer). The `brain-mcp` binary and `brain_mcp` import path are unchanged.
+
 ## [0.5.2] - 2026-06-27
 
 ### Added
