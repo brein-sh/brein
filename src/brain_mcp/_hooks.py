@@ -59,9 +59,12 @@ def entries() -> dict[str, list[dict]]:
     )
     # Capture every user prompt to a per-session file so PostToolUse hooks
     # can use it as the "question" when grep/read targets the brain repo.
+    # Claude Code passes a JSON envelope on stdin — `brein eval capture-prompt`
+    # extracts the `.prompt` field so the eval worker hashes the user's
+    # actual question, not the session-id-laced envelope.
     capture_prompt = (
         f'{_DISABLE_CHECK}'
-        f'cat > "{_PROMPT_FILE}" 2>/dev/null; exit 0'
+        f'brein eval capture-prompt --out "{_PROMPT_FILE}" >/dev/null 2>&1; exit 0'
     )
     # Grep/Read on the brain repo → benchmark the user's most recent prompt
     # as if it had been a brain_search. The eval worker is detached and

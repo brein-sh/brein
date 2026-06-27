@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.14] - 2026-06-27
+
+### Fixed
+- `UserPromptSubmit` hook now extracts the actual user prompt from Claude Code's JSON envelope (which also carries `session_id`, `transcript_path`, etc.). Before this fix the eval worker hashed the entire envelope — so every prompt looked novel (defeating dedup) and the question A/B'd was the literal JSON, not the question. New CLI: `brein eval capture-prompt --out PATH`.
+
+### Added
+- `BRAIN_OBSERVE_PATHS` env var (colon-separated) lets `eval observe` benchmark Grep/Read into additional brain repo clones beyond the primary `$BRAIN_REPO`. Useful when you have e.g. a legacy `~/.braincorp/brain` alongside the canonical `~/Documents/GitHub/company-brain`.
+
 ## [0.5.13] - 2026-06-27
 
 ### Fixed

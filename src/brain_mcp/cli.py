@@ -83,13 +83,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     ev = sub.add_parser("eval", help="Continuous A/B eval (LLM-gated)")
     ev.add_argument(
-        "eval_action", choices=["tick", "observe"],
+        "eval_action", choices=["tick", "observe", "capture-prompt"],
         help=("tick: read job JSON from stdin, gate, conditionally run A/B. "
-              "observe: Claude Code PostToolUse hook — fires eval when a "
-              "Grep/Read targets a path under $BRAIN_REPO."),
+              "observe: PostToolUse hook — fires eval when Grep/Read targets "
+              "$BRAIN_REPO. "
+              "capture-prompt: UserPromptSubmit hook — extracts `.prompt` "
+              "from the Claude Code envelope and writes it to --out."),
     )
     ev.add_argument("--prompt-file", default="",
                     help="Path to the saved user prompt (for `observe`)")
+    ev.add_argument("--out", default="",
+                    help="Output file (for `capture-prompt`)")
     ev.set_defaults(func=_cmd_eval)
 
     dm = sub.add_parser(
@@ -132,17 +136,45 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         )
         return 0
 
+    if args.eval_action == "capture-prompt":
+        try:
+            raw = sys.stdin.read()
+            text = raw
+            try:
+                d = json.loads(raw)
+                if isinstance(d, dict) and isinstance(d.get("prompt"), str):
+                    text = d["prompt"]
+            except (json.JSONDecodeError, ValueError):
+                pass
+            if args.out:
+                Path(args.out).write_text(text or "", encoding="utf-8")
+        except Exception:
+            pass
+        return 0
+
     if args.eval_action == "observe":
         # Silent on every failure — never block Claude Code's tool pipeline.
         try:
             from .config import REPO_PATH
+            # BRAIN_OBSERVE_PATHS lets you watch additional brain repos
+            # (colon-separated), e.g. legacy or mirrored clones. Defaults to
+            # just the primary BRAIN_REPO.
+            extra_raw = os.environ.get("BRAIN_OBSERVE_PATHS", "") or ""
+            roots: list[Path] = [REPO_PATH]
+            for p in extra_raw.split(":"):
+                p = p.strip()
+                if not p:
+                    continue
+                try:
+                    roots.append(Path(p).expanduser().resolve())
+                except (OSError, RuntimeError):
+                    pass
+
             raw = sys.stdin.read() or "{}"
             try:
                 envelope = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
                 return 0
-            # Claude Code PostToolUse stdin shape varies across versions;
-            # check common nesting points.
             tool_input = (
                 envelope.get("tool_input")
                 or envelope.get("input")
@@ -160,10 +192,16 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 target = Path(path).expanduser().resolve()
             except (OSError, RuntimeError):
                 return 0
-            try:
-                target.relative_to(REPO_PATH)
-            except ValueError:
-                return 0  # path is not under brain repo — ignore
+
+            def _under(t: Path, r: Path) -> bool:
+                try:
+                    t.relative_to(r)
+                    return True
+                except ValueError:
+                    return False
+
+            if not any(_under(target, r) for r in roots):
+                return 0
             prompt_path = Path(args.prompt_file or "")
             if not prompt_path or not prompt_path.exists():
                 return 0
