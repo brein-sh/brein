@@ -125,8 +125,12 @@ def test_write_loop(brain_env):
     assert "gamma penguin memo" in log, log
 
     # Push reached the bare remote.
+    # Query refs/heads/main explicitly: bare repo HEAD may default to a
+    # different branch on the runner (e.g. master), which would make a
+    # bare `git log -1` fail with no such ref.
     bare_log = subprocess.run(
-        ["git", "-C", str(repo.parent / "brain.git"), "log", "-1", "--pretty=%s"],
+        ["git", "-C", str(repo.parent / "brain.git"), "log", "-1",
+         "--pretty=%s", "refs/heads/main"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     assert "gamma penguin memo" in bare_log, bare_log
