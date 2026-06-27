@@ -4,6 +4,23 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.8] - 2026-06-27
+
+### Security / Data integrity
+- **Synchronous push.** `brain_update` now waits for `git push` and reports `pushed: "ok" | "failed"` with a `push_error` field on failure. The old daemon-thread `_bg_push` returned `pushed: "pending"` synchronously and silently swallowed remote rejections (pre-receive hook, divergence, network). Commits could accumulate locally with no signal — fixed.
+- **Inter-process write lock.** Two `brain_update` calls from concurrent `brain-mcp` processes used to race the pull → write → commit → push sequence; both could return success while neither commit landed. Now serialized via `fcntl.flock` on `<REPO>/.git/brein-write.lock` covering the full sequence (including network push). The previous per-process `_push_lock` was a no-op across processes — each MCP stdio client spawns its own.
+- **AWS access key scanner** (carried over from 0.5.7): `AKIA…` / `ASIA…` patterns now rejected by `_detect_secrets`.
+
+### Fixed
+- **Frontmatter parser/validator gaps surfaced by E2E suite:**
+  - Tab-indented required fields (e.g. `\ttype: note`) previously passed existence-by-substring check but were invisible to the parser. Validator now requires fields at column 0 inside the frontmatter block.
+  - Duplicate frontmatter keys (e.g. two `status:` lines) silently last-wins. Now rejected with `duplicate frontmatter key <key>`.
+- **Append mode silent corruption.** `brain_update(mode="append")` now rejects content beginning with a `---` block followed by another `---`, which would create a phantom second frontmatter block the validator never sees.
+- **Vector index shape crash.** A `vector-index.json` whose root is a JSON list (not a dict) used to crash `brain_search` with raw `'list' object has no attribute 'get'`. Now treated as corrupted and rebuilt, like other corruption modes.
+
+### Added
+- **103 end-to-end tests** under `tests/test_*.py` driving the real MCP server (no mocks) over real fastembed across 10 surfaces: concurrency, append mode, pull-FF / push failure, index corruption, HTTP streamable-http transport, frontmatter parser, path traversal & symlinks, `brain_evidence` & `brain_audit`, rerank, and external-edit / index freshness. New `test.yml` already runs these on every push and PR.
+
 ## [0.5.7] - 2026-06-27
 
 ### Security

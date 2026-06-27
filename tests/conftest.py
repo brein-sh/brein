@@ -5,6 +5,7 @@ real ~/.brein.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -13,6 +14,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+# Always drive the importable working tree, not a stale global install.
+BRAIN_MCP_CMD = sys.executable
+BRAIN_MCP_ARGS = ["-m", "brain_mcp.server"]
+BREIN_CLI = [sys.executable, "-m", "brain_mcp.cli"]
 
 # Distinctive terms chosen so a search match is unambiguous.
 def _frontmatter(title: str, tags: list[str]) -> str:
@@ -101,3 +110,53 @@ def brain_env(tmp_path: Path) -> dict[str, str]:
     )
 
     return env
+
+
+# ── Shared MCP helpers ───────────────────────────────────────────────────────
+
+async def _call_async(env, tool: str, args: dict):
+    """Return (text, is_error) from one tool call over a fresh stdio session."""
+    params = StdioServerParameters(command=BRAIN_MCP_CMD, args=BRAIN_MCP_ARGS, env=env)
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool, args)
+            assert result.content, f"{tool} returned no content"
+            return result.content[0].text, bool(getattr(result, "isError", False))
+
+
+def call_tool(env, tool: str, args: dict) -> tuple[str, bool]:
+    """Sync wrapper around one MCP tool call. Returns (text, is_error)."""
+    return asyncio.run(_call_async(env, tool, args))
+
+
+def run(env, tool: str, args: dict):
+    """Happy-path helper. Asserts non-error, returns parsed JSON."""
+    text, is_error = call_tool(env, tool, args)
+    assert not is_error, f"unexpected tool error: {text}"
+    return json.loads(text)
+
+
+def run_raw(env, tool: str, args: dict):
+    """Returns (parsed_or_text, is_error). Use this when the tool may error."""
+    text, is_error = call_tool(env, tool, args)
+    try:
+        return json.loads(text), is_error
+    except json.JSONDecodeError:
+        return text, is_error
+
+
+def have_fastembed_model() -> bool:
+    """True when the real semantic embedder is loadable."""
+    try:
+        from fastembed import TextEmbedding
+        TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        return True
+    except Exception:
+        return False
+
+
+needs_embedder = pytest.mark.skipif(
+    not have_fastembed_model(),
+    reason="real fastembed model unavailable (offline / first run)",
+)
