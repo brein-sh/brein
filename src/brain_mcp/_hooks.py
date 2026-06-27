@@ -41,10 +41,11 @@ def entries() -> dict[str, list[dict]]:
         f'{_DISABLE_CHECK}'
         f'F="{_ORIENT_FLAG}"; [ -f "$F" ] && exit 0; '
         'INPUT=$(cat); '
+        'REPO="${BRAIN_REPO:-$HOME/.brein/brain}"; '
         'case "$INPUT" in '
-        '  *.brein/brain/README.md*|*.brein/brain/AGENTS.md*) touch "$F"; exit 0 ;; '
+        '  *"$REPO/README.md"*|*"$REPO/AGENTS.md"*) touch "$F"; exit 0 ;; '
         'esac; '
-        "echo '[BLOCKED] Orient first: Read $HOME/.brein/brain/README.md and AGENTS.md before tool use. brain_search/brain_update are encouraged afterward (or `brein hooks off`).' >&2; "
+        "echo \"[BLOCKED] Orient first: Read $REPO/README.md and AGENTS.md before tool use. brain_search/brain_update are encouraged afterward (or \\`brein hooks off\\`).\" >&2; "
         "exit 2"
     )
     write_reminder = (
