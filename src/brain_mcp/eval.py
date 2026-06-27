@@ -147,6 +147,39 @@ def _log_gate_skip(question: str, query_hash: str, trigger: str, gate_meta: dict
         pass
 
 
+def _commit_and_push_eval_row(commit_msg: str) -> None:
+    """Commit the just-appended eval row and push. Silent on every failure
+    — telemetry must never break the host. Uses the same inter-process lock
+    as brain_update so we don't race writes.
+
+    Skipped when EVAL_LOG_PATH lives outside the brain git repo (e.g. user
+    points BRAIN_RETRIEVAL_LOG/eval at a path under $HOME for purely-local
+    telemetry)."""
+    try:
+        # eval log lives at REPO_PATH/.brain/eval-log.jsonl by construction.
+        # Bail if someone moved it outside the repo.
+        try:
+            rel = EVAL_LOG_PATH.relative_to(REPO_PATH)
+        except ValueError:
+            return
+        from .shared import _interprocess_write_lock, _run_git
+        with _interprocess_write_lock():
+            _run_git(["pull", "--ff-only", "--quiet", "origin", "HEAD"])
+            r = _run_git(["add", str(rel)])
+            if r.returncode != 0:
+                return
+            # Nothing staged? (e.g. log was reverted between append+commit) → skip
+            staged = _run_git(["diff", "--cached", "--quiet"])
+            if staged.returncode == 0:
+                return
+            c = _run_git(["commit", "-q", "-m", commit_msg])
+            if c.returncode != 0:
+                return
+            _run_git(["push", "--quiet", "origin", "HEAD"])
+    except Exception:
+        pass
+
+
 # ── Inference: CLI first, OpenRouter fallback ────────────────────────────
 def _which_cli() -> str | None:
     """Pick the first available CLI from preference order."""
@@ -453,9 +486,15 @@ def _tick(question: str, evidence_block: str, query_hash: str, trigger: str) -> 
         if not decided:
             _mark_seen(query_hash, "gate_skipped")
             _log_gate_skip(question, query_hash, trigger, gate_meta)
+            _commit_and_push_eval_row(
+                f"eval(gate_skipped): {question[:60].splitlines()[0]}"
+            )
             return
         _mark_seen(query_hash, "ab_run")
         _run_ab(question, evidence_block, trigger, query_hash)
+        _commit_and_push_eval_row(
+            f"eval(ab): {question[:60].splitlines()[0]}"
+        )
     except Exception:
         # Telemetry must never break the host.
         pass

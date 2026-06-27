@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.11] - 2026-06-27
+
+### Added
+- Eval worker now **auto-commits and pushes** `.brain/eval-log.jsonl` after every new row (both `gate_skipped` and full A/B verdicts). Previously rows accumulated in the local file until the user manually `git push`ed the brain repo, so the brein.sh telemetry page lagged reality by however many days. Uses the same inter-process file lock as `brain_update` so writes don't race. Silent on every failure — telemetry must never break the host.
+
 ## [0.5.10] - 2026-06-27
 
 ### Fixed
