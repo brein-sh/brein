@@ -172,6 +172,8 @@ def _index_has_entries() -> bool:
         raw = json.loads(VECTOR_INDEX_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
+    if not isinstance(raw, dict):
+        return False
     return bool(raw.get("entries"))
 
 

@@ -166,7 +166,9 @@ def _load_vector_index(directory: str = "docs", force_rebuild: bool = False, pro
     if not force_rebuild and VECTOR_INDEX_PATH.exists():
         try:
             cached = json.loads(VECTOR_INDEX_PATH.read_text(encoding="utf-8"))
-            if cached.get("global_signature") == global_sig:
+            # Treat non-dict top-level JSON (e.g. a list) as corrupted: fall
+            # through to a clean rebuild instead of crashing on .get().
+            if isinstance(cached, dict) and cached.get("global_signature") == global_sig:
                 cached_fps = cached.get("file_signatures", {}) or {}
                 for entry in cached.get("entries", []):
                     cached_entries_by_path.setdefault(entry["path"], []).append(entry)
