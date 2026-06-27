@@ -401,6 +401,20 @@ def brain_update(file_path: str, content: str, commit_message: str, mode: str = 
     new = content.rstrip() + "\n" if mode == "replace" else old.rstrip() + "\n" + content.rstrip() + "\n"
     if _detect_secrets(new):
         return _json({"error": "Refusing to write because resulting file appears to contain secrets."})
+    # Append mode: reject content that would inject a second frontmatter block.
+    # The downstream validator only inspects the first frontmatter block, so a
+    # naive append of "---\n<keys>\n---\n..." silently corrupts the doc.
+    if mode == "append":
+        stripped = content.lstrip()
+        if stripped.startswith("---\n") or stripped.startswith("---\r\n"):
+            after_open = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+            for line in after_open.splitlines():
+                if line.rstrip() == "---":
+                    return _json({
+                        "error": "append rejected: content begins with a frontmatter block (would create duplicate frontmatter)",
+                        "path": rel,
+                        "rolled_back": True,
+                    })
 
     changed_docs = rel.startswith("docs/")
     paths = [rel] + (["docs/index.md"] if changed_docs else [])
