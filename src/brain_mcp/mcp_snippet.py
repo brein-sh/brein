@@ -27,7 +27,9 @@ def snippet(cfg: BreinConfig, client: str, *, http_url: str | None = None) -> st
 
     if http_url:
         # Shared daemon: clients connect to one process over HTTP.
-        server_block: dict = {"url": http_url}
+        # `type: "http"` is required by Claude Code (newer versions) — without
+        # it, the brain server is parsed into config but never shown in /mcp.
+        server_block: dict = {"type": "http", "url": http_url}
     else:
         cmd = _launcher_command()
         server_block = {

@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.13] - 2026-06-27
+
+### Fixed
+- `brein mcp <client> --http-url` now emits `{type: "http", url: ...}` instead of just `{url: ...}`. Newer Claude Code releases require the explicit `type` field — without it the server was parsed into `~/.claude.json` but never appeared in the `/mcp` UI, even though the daemon was healthy on `127.0.0.1:8765`.
+
 ## [0.5.12] - 2026-06-27
 
 ### Added
