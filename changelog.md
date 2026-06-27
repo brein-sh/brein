@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.10] - 2026-06-27
+
+### Fixed
+- `brein daemon launchd` now emits a **complete** plist. Previously it only wrote `BRAIN_MCP_TRANSPORT/HOST/PORT` — missing `BRAIN_REPO`, `BRAIN_RETRIEVAL_LOG`, `BRAIN_VECTOR_INDEX`, `BRAIN_EMBEDDING_MODEL`, and `BRAIN_EVAL_ENABLED`. Users who followed the install instructions got a daemon that silently failed every search because `BRAIN_REPO` defaulted to a non-existent path. Values are pulled from `~/.brein/config.json`.
+
 ## [0.5.9] - 2026-06-27
 
 ### Fixed

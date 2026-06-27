@@ -207,6 +207,28 @@ _LAUNCHD_LABEL = "sh.brein.daemon"
 
 def _launchd_plist(host: str, port: int, brain_mcp_path: str) -> str:
     log = Path.home() / ".brein" / "daemon.log"
+
+    # Pull brain repo/log/index/model/eval flags from the user's config so the
+    # daemon has everything it needs at boot. Without these, the daemon would
+    # default BRAIN_REPO to ~/.brein/brain (likely non-existent) and silently
+    # fail every search.
+    try:
+        cfg = load()
+        cfg_env: list[tuple[str, str]] = [
+            ("BRAIN_REPO", cfg.repo_path),
+            ("BRAIN_RETRIEVAL_LOG", cfg.retrieval_log),
+            ("BRAIN_VECTOR_INDEX", cfg.vector_index),
+            ("BRAIN_EMBEDDING_MODEL", cfg.embedding_model),
+            ("BRAIN_EVAL_ENABLED", "on" if cfg.eval_enabled else "off"),
+        ]
+    except Exception:
+        cfg_env = []
+    cfg_lines = "\n".join(
+        f"    <key>{k}</key><string>{v}</string>"
+        for k, v in cfg_env if v
+    )
+    cfg_block = f"\n{cfg_lines}" if cfg_lines else ""
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -220,7 +242,7 @@ def _launchd_plist(host: str, port: int, brain_mcp_path: str) -> str:
   <dict>
     <key>BRAIN_MCP_TRANSPORT</key><string>http</string>
     <key>BRAIN_MCP_HOST</key><string>{host}</string>
-    <key>BRAIN_MCP_PORT</key><string>{port}</string>
+    <key>BRAIN_MCP_PORT</key><string>{port}</string>{cfg_block}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
