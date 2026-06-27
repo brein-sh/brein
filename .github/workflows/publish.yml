@@ -75,7 +75,7 @@ jobs:
 
       - name: Run tests
         if: needs.resolve-version.outputs.skip_tests != 'true'
-        run: pytest -q || echo "No tests yet; skipping"
+        run: pytest -q
 
       - name: Build wheel + sdist
         run: python -m build

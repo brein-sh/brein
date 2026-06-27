@@ -4,6 +4,15 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.6] - 2026-06-27
+
+### Added
+- E2E test suite (`tests/test_e2e.py`) driving the real MCP server over stdio: search round-trip, write loop (file → commit → push to bare remote), and **telemetry conservation** — every `brain_search` must emit exactly one `tool_call` row and one `search` row, with the documented schema. Catches silent telemetry regressions.
+- `test.yml` workflow runs the suite on every push and PR.
+
+### Changed
+- Publish pipeline no longer falls through on missing tests; `pytest -q` is now blocking.
+
 ## [0.5.5] - 2026-06-27
 
 ### Fixed

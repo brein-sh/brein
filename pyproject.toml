@@ -17,6 +17,9 @@ dependencies = [
   "tomli-w>=1.0.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 brain-mcp = "brain_mcp.server:main"
 brein = "brain_mcp.cli:main"

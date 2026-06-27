@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Configure test git identity
+        # ponytail: required so `brain_update` can commit during write-loop test.
+        run: |
+          git config --global user.email "ci@brein.sh"
+          git config --global user.name "brein CI"
+
+      - name: Run E2E tests
+        run: pytest -v
