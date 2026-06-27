@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 
 from . import _hooks, consistency, doctor, index_state, index_worker, mcp_snippet, setup
 from ._user_config import CONFIG_PATH, load
@@ -31,7 +33,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
 def _cmd_mcp(args: argparse.Namespace) -> int:
     cfg = load()
     try:
-        print(mcp_snippet.snippet(cfg, args.client))
+        print(mcp_snippet.snippet(cfg, args.client, http_url=args.http_url))
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -59,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     m = sub.add_parser("mcp", help="Print MCP client snippet")
     m.add_argument("client", choices=mcp_snippet.CLIENTS)
+    m.add_argument(
+        "--http-url",
+        help="Use the shared daemon at this URL (e.g. http://127.0.0.1:8765/mcp) "
+             "instead of spawning stdio per client",
+    )
     m.set_defaults(func=_cmd_mcp)
 
     h = sub.add_parser("hooks", help="Manage Claude Code hooks")
@@ -73,6 +80,15 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("action", choices=["check", "spawn", "status", "clear"])
     cc.add_argument("path", nargs="?", help="repo-relative or absolute path to the written doc (for check/spawn)")
     cc.set_defaults(func=_cmd_consistency)
+
+    dm = sub.add_parser(
+        "daemon",
+        help="Run a shared HTTP MCP daemon (one model load, many clients)",
+    )
+    dm.add_argument("action", choices=["run", "url", "launchd"], nargs="?", default="run")
+    dm.add_argument("--host", default="127.0.0.1")
+    dm.add_argument("--port", type=int, default=8765)
+    dm.set_defaults(func=_cmd_daemon)
 
     return p
 
@@ -156,6 +172,66 @@ def _cmd_hooks(args: argparse.Namespace) -> int:
 
 
 _INSTALL_URL = "git+https://github.com/brein-sh/brein.git"
+
+
+_LAUNCHD_LABEL = "sh.brein.daemon"
+
+
+def _launchd_plist(host: str, port: int, brain_mcp_path: str) -> str:
+    log = Path.home() / ".brein" / "daemon.log"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{brain_mcp_path}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BRAIN_MCP_TRANSPORT</key><string>http</string>
+    <key>BRAIN_MCP_HOST</key><string>{host}</string>
+    <key>BRAIN_MCP_PORT</key><string>{port}</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict>
+</plist>
+"""
+
+
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    import shutil
+
+    url = f"http://{args.host}:{args.port}/mcp"
+
+    if args.action == "url":
+        print(url)
+        return 0
+
+    if args.action == "launchd":
+        brain_mcp_path = shutil.which("brain-mcp") or "/usr/local/bin/brain-mcp"
+        plist_path = Path.home() / "Library" / "LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+        print(_launchd_plist(args.host, args.port, brain_mcp_path))
+        print(f"# save as: {plist_path}", file=sys.stderr)
+        print(f"# load:    launchctl load {plist_path}", file=sys.stderr)
+        print(f"# stop:    launchctl unload {plist_path}", file=sys.stderr)
+        return 0
+
+    # run: foreground HTTP server. Background it with launchd (`brein daemon
+    # launchd`) or `nohup brein daemon > ~/.brein/daemon.log 2>&1 &`.
+    os.environ["BRAIN_MCP_TRANSPORT"] = "http"
+    os.environ["BRAIN_MCP_HOST"] = args.host
+    os.environ["BRAIN_MCP_PORT"] = str(args.port)
+    brain_mcp = shutil.which("brain-mcp")
+    if brain_mcp:
+        os.execvp(brain_mcp, [brain_mcp])
+    from . import server
+    server.main()
+    return 0
 
 
 def _self_upgrade_and_reexec() -> None:

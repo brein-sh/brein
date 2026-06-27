@@ -838,7 +838,24 @@ def main() -> None:
         _startup_warmup()
     except Exception as exc:
         print(f"[brain-mcp] startup error: {exc}", file=sys.stderr, flush=True)
-    mcp.run(transport="stdio")
+
+    # Transport: stdio (default, one server per client) or streamable-http
+    # (one daemon, many clients — model loaded once). Set
+    # BRAIN_MCP_TRANSPORT=http to share one process across N MCP clients.
+    transport = os.environ.get("BRAIN_MCP_TRANSPORT", "stdio").lower()
+    if transport in ("http", "streamable-http", "sse"):
+        host = os.environ.get("BRAIN_MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("BRAIN_MCP_PORT", "8765"))
+        mcp.settings.host = host
+        mcp.settings.port = port
+        print(
+            f"[brain-mcp] listening on http://{host}:{port}/mcp (streamable-http)",
+            file=sys.stderr,
+            flush=True,
+        )
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

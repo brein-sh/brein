@@ -4,6 +4,17 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.2] - 2026-06-27
+
+### Added
+- Shared HTTP daemon. `brein daemon` runs one `brain-mcp` server over `streamable-http`; all MCP clients connect to the same URL so the embedder model is loaded once instead of once per client (~800MB × N → ~800MB total).
+- `brein daemon launchd` prints a ready-to-load `~/Library/LaunchAgents/sh.brein.daemon.plist`.
+- `brein daemon url` prints the daemon URL.
+- `brein mcp <client> --http-url <url>` emits a client config that connects to the shared daemon instead of spawning stdio per client.
+
+### Changed
+- Server respects `BRAIN_MCP_TRANSPORT=http` (with `BRAIN_MCP_HOST` / `BRAIN_MCP_PORT`, default `127.0.0.1:8765`). Stdio remains the default for back-compat.
+
 ## [0.5.1] - 2026-06-27
 
 ### Added
