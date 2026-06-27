@@ -127,15 +127,9 @@ jobs:
             echo "brein@${VERSION} already on npm; skipping."
             exit 0
           fi
-          # Try with provenance; fall back without if sigstore/transparency log misbehaves.
-          if ! npm publish --provenance --access public --tag "$NPM_TAG" 2>&1 | tee /tmp/pub.log; then
-            if grep -Eq 'IDENTITY_TOKEN_READ_ERROR|TLOG_CREATE_ENTRY_ERROR|provenance|transparency log' /tmp/pub.log; then
-              echo "Retrying without provenance."
-              npm publish --access public --tag "$NPM_TAG"
-            else
-              exit 1
-            fi
-          fi
+          # ponytail: no --provenance; npm reports unrelated errors as 404,
+          # so the auto-fallback was unreliable. Re-add once stable.
+          npm publish --access public --tag "$NPM_TAG"
 
   github-release:
     name: GitHub Release
