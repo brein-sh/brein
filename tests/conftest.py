@@ -5,9 +5,11 @@ real ~/.brein.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,10 +79,25 @@ def brain_env(tmp_path: Path) -> dict[str, str]:
         "BRAIN_EVAL_ENABLED": "1",
     }
 
+    # `brein doctor` reads ~/.brein/config.json (env vars alone aren't enough
+    # for the file-based config check). Mirror the env values into the file.
+    (home / ".brein" / "config.json").write_text(json.dumps({
+        "repo_path": env["BRAIN_REPO"],
+        "retrieval_log": env["BRAIN_RETRIEVAL_LOG"],
+        "vector_index": env["BRAIN_VECTOR_INDEX"],
+        "embedding_model": "BAAI/bge-small-en-v1.5",
+        "eval_enabled": True,
+        "eval_host_order": ["claude", "codex", "gemini"],
+    }, indent=2))
+
     # Pre-build the index synchronously so the first search returns 'ready',
     # not 'building'. Otherwise telemetry assertions fail (the gate path
     # short-circuits before _append_retrieval_log).
-    brein = shutil.which("brein") or "brein"
-    subprocess.run([brein, "index", "build"], env=env, check=True, capture_output=True)
+    # Drive the importable module so tests run against the working tree,
+    # not a stale globally-installed brein.
+    subprocess.run(
+        [sys.executable, "-m", "brain_mcp.cli", "index", "build"],
+        env=env, check=True, capture_output=True,
+    )
 
     return env

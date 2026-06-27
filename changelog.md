@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.7] - 2026-06-27
+
+### Security
+- Secret scanner now blocks AWS access key IDs (`AKIA…` / `ASIA…`). Found via E2E test that submitted `AKIAIOSFODNN7EXAMPLE` and saw it committed.
+
+### Added
+- E2E coverage expanded to 10 tests over the real fastembed backend: semantic recall (lexically distant query), write→reindex→search closure, validator rollback assertion (file gone + HEAD unchanged), path-traversal block, secret-scanning block, CLI smoke (`brein doctor`, `brein index status`). Tests now drive the working tree (`python -m brain_mcp.server` / `brain_mcp.cli`) instead of the globally-installed binary.
+
 ## [0.5.6] - 2026-06-27
 
 ### Added

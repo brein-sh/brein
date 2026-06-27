@@ -37,6 +37,8 @@ SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"),
     re.compile(r"(?i)seed phrase\s*[:=]"),
+    # AWS access key id (AKIA = long-term IAM, ASIA = temp STS).
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
 ]
 
 ALLOWED_WRITE_PREFIXES = ("docs/", "skills/", "templates/")
