@@ -81,6 +81,8 @@ def parse_frontmatter_block(text: str) -> dict[str, str] | None:
         key, value = m.group(1), m.group(2).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
+        if key in out:
+            raise ValueError(f"duplicate frontmatter key {key}")
         out[key] = value
     return out
 
@@ -213,7 +215,11 @@ def main() -> int:
                         errors.append(f"{path}: missing {pattern}")
                         missing_field = True
                 if not missing_field:
-                    fm = parse_frontmatter_block(text) or {}
+                    try:
+                        fm = parse_frontmatter_block(text) or {}
+                    except ValueError as e:
+                        errors.append(f"{path}: {e}")
+                        continue
                     errors.extend(check_status(path, fm))
                     stale_errs, stale_warns = check_staleness(path, fm, today)
                     errors.extend(stale_errs)
