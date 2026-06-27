@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.5] - 2026-06-27
+
+### Fixed
+- CI: write `.npmrc` manually instead of relying on `setup-node`'s auto-config. The auto-config emits `always-auth=true`, which causes granular npm tokens to be rejected with a misleading 404 on publish.
+
 ## [0.5.4] - 2026-06-27
 
 ### Changed

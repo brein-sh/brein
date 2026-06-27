@@ -108,7 +108,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+
+      - name: Write .npmrc
+        working-directory: npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # ponytail: write .npmrc inline; setup-node's auto-config used
+        # always-auth=true which trips up granular tokens with a misleading 404.
+        run: |
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > .npmrc
 
       - name: Sync npm/package.json version
         working-directory: npm
@@ -119,16 +127,12 @@ jobs:
 
       - name: Publish to npm
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           if npm view "brein@${VERSION}" version --silent >/dev/null 2>&1; then
             echo "brein@${VERSION} already on npm; skipping."
             exit 0
           fi
-          # ponytail: no --provenance; npm reports unrelated errors as 404,
-          # so the auto-fallback was unreliable. Re-add once stable.
           npm publish --access public --tag "$NPM_TAG"
 
   github-release:
