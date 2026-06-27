@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .config import (
     ALLOWED_ROOT_WRITES,
@@ -41,6 +43,28 @@ def _run_repo_cmd(args: list[str], check: bool = False) -> subprocess.CompletedP
 def _ensure_repo() -> None:
     if not (REPO_PATH / ".git").exists():
         raise RuntimeError(f"BRAIN_REPO is not a git repo: {REPO_PATH}")
+
+
+@contextlib.contextmanager
+def _interprocess_write_lock() -> Iterator[None]:
+    """Cross-process exclusive lock around the brain_update write sequence.
+
+    Uses fcntl.flock on a sentinel file inside the repo's .git dir so that
+    every brain-mcp process (each MCP stdio client spawns its own) serializes
+    the full pull -> stage -> commit -> push sequence. Held across the push
+    so two updates can't both win the local commit and lose the remote race.
+    """
+    lock_path = REPO_PATH / ".git" / "brein-write.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "w")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 def _safe_path(file_path: str) -> Path:

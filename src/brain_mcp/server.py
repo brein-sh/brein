@@ -49,6 +49,7 @@ from .shared import (
     _detect_secrets,
     _ensure_repo,
     _frontmatter,
+    _interprocess_write_lock,
     _iter_markdown,
     _json,
     _line_snippets,
@@ -130,10 +131,22 @@ def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
     _run_git(["commit", "-m", commit_message], check=True)
     status = _run_git(["status", "--short"], check=True).stdout.strip()
     head = _run_git(["rev-parse", "--short", "HEAD"], check=True).stdout.strip()
-    # ponytail: push in background — caller doesn't wait the ~1s network round-trip.
-    # Failure logged to stderr; next op's _pull_ff catches divergence.
-    threading.Thread(target=_bg_push, name="cb-push", daemon=True).start()
-    return {"changed": True, "pushed": "pending", "clean": status == "", "dirty_status": status, "head": head}
+    # Push synchronously while the caller still holds the inter-process write
+    # lock — otherwise two writers could both win their local commit and then
+    # race the remote non-ff. Per-process _push_lock still gates the rare
+    # telemetry/async pushes that happen outside brain_update.
+    with _push_lock:
+        push = _run_git(["push", "origin", "main"])
+    if push.returncode != 0:
+        return {
+            "changed": True,
+            "pushed": "failed",
+            "push_error": (push.stderr or push.stdout).strip()[:400],
+            "clean": status == "",
+            "dirty_status": status,
+            "head": head,
+        }
+    return {"changed": True, "pushed": "ok", "clean": status == "", "dirty_status": status, "head": head}
 
 
 def _index_status_payload() -> str | None:
@@ -394,13 +407,6 @@ def brain_update(file_path: str, content: str, commit_message: str, mode: str = 
         return _json({"error": "Writes restricted to docs/, skills/, templates/, AGENTS.md, README.md, CONTRIBUTING.md", "path": rel})
     if mode not in {"replace", "append"}:
         return _json({"error": "mode must be replace or append"})
-    _pull_ff()
-    existed_before = full.exists()
-    old = full.read_text(encoding="utf-8") if existed_before else ""
-    full.parent.mkdir(parents=True, exist_ok=True)
-    new = content.rstrip() + "\n" if mode == "replace" else old.rstrip() + "\n" + content.rstrip() + "\n"
-    if _detect_secrets(new):
-        return _json({"error": "Refusing to write because resulting file appears to contain secrets."})
     # Append mode: reject content that would inject a second frontmatter block.
     # The downstream validator only inspects the first frontmatter block, so a
     # naive append of "---\n<keys>\n---\n..." silently corrupts the doc.
@@ -416,21 +422,34 @@ def brain_update(file_path: str, content: str, commit_message: str, mode: str = 
                         "rolled_back": True,
                     })
 
-    changed_docs = rel.startswith("docs/")
-    paths = [rel] + (["docs/index.md"] if changed_docs else [])
-    created = [rel] if not existed_before else []
+    # Serialize the full pull -> write -> validate -> commit -> push sequence
+    # across every brain-mcp process (each MCP stdio client spawns its own),
+    # so two concurrent updates can't both win the local commit and race the
+    # remote push.
+    with _interprocess_write_lock():
+        _pull_ff()
+        existed_before = full.exists()
+        old = full.read_text(encoding="utf-8") if existed_before else ""
+        full.parent.mkdir(parents=True, exist_ok=True)
+        new = content.rstrip() + "\n" if mode == "replace" else old.rstrip() + "\n" + content.rstrip() + "\n"
+        if _detect_secrets(new):
+            return _json({"error": "Refusing to write because resulting file appears to contain secrets."})
 
-    full.write_text(new, encoding="utf-8")
-    try:
-        validation = _validate_after_write(changed_docs=changed_docs)
-        result = _commit_push(paths, commit_message)
-    except Exception as exc:
-        _restore_paths(paths, created)
-        return _json({
-            "error": f"update rolled back: {exc}",
-            "path": rel,
-            "rolled_back": True,
-        })
+        changed_docs = rel.startswith("docs/")
+        paths = [rel] + (["docs/index.md"] if changed_docs else [])
+        created = [rel] if not existed_before else []
+
+        full.write_text(new, encoding="utf-8")
+        try:
+            validation = _validate_after_write(changed_docs=changed_docs)
+            result = _commit_push(paths, commit_message)
+        except Exception as exc:
+            _restore_paths(paths, created)
+            return _json({
+                "error": f"update rolled back: {exc}",
+                "path": rel,
+                "rolled_back": True,
+            })
     # Fire-and-forget consistency check on the just-written doc. Detached,
     # never blocks the response. Findings land in ~/.brein/consistency-queue.jsonl
     # and are pulled via brain_consistency_status.
