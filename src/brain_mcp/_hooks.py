@@ -18,7 +18,7 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 DISABLE_FLAG = Path.home() / ".brein" / "disabled"
 
 _DISABLE_CHECK = '[ "${BREIN_GATE:-on}" = "off" ] && exit 0; [ -f "$HOME/.brein/disabled" ] && exit 0; '
-_SEARCH_FLAG = '/tmp/claude-brein-search-${CLAUDE_CODE_SESSION_ID:-default}'
+_ORIENT_FLAG = '/tmp/claude-brein-oriented-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_FLAG = '/tmp/claude-brein-write-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_REMINDED = '/tmp/claude-brein-write-reminded-${CLAUDE_CODE_SESSION_ID:-default}'
 
@@ -33,19 +33,18 @@ def _entry(matcher: str, command: str) -> dict:
 
 def entries() -> dict[str, list[dict]]:
     """All brein hook entries keyed by Claude Code event type."""
-    # Read the brain via brain_search OR via plain grep/Read/cat on the
-    # brain repo path — both count as "the agent consulted the brain".
-    # Tool input arrives as JSON on stdin; substring-match the repo path.
+    # Orientation gate: the agent must Read the brain's README.md or
+    # AGENTS.md before other tools run. brain_search/brain_update are
+    # encouraged throughout but are NOT preconditions — orientation is.
+    # Tool input arrives as JSON on stdin; substring-match the orient docs.
     read_gate = (
         f'{_DISABLE_CHECK}'
-        f'F="{_SEARCH_FLAG}"; [ -f "$F" ] && exit 0; '
+        f'F="{_ORIENT_FLAG}"; [ -f "$F" ] && exit 0; '
         'INPUT=$(cat); '
-        'REPO="${BRAIN_REPO:-$HOME/.brein/brain}"; '
         'case "$INPUT" in '
-        '  *"$REPO"*) touch "$F"; exit 0 ;; '
-        '  *.brein/brain*) touch "$F"; exit 0 ;; '
+        '  *.brein/brain/README.md*|*.brein/brain/AGENTS.md*) touch "$F"; exit 0 ;; '
         'esac; '
-        "echo '[BLOCKED] Read the brain first: mcp__brain__brain_search OR Grep/Read inside '\"$REPO\"' (or `brein hooks off`).' >&2; "
+        "echo '[BLOCKED] Orient first: Read $HOME/.brein/brain/README.md and AGENTS.md before tool use. brain_search/brain_update are encouraged afterward (or `brein hooks off`).' >&2; "
         "exit 2"
     )
     write_reminder = (
@@ -59,9 +58,7 @@ def entries() -> dict[str, list[dict]]:
     return {
         "PreToolUse": [_entry(r"^(?!ToolSearch$|mcp__brain__).+", read_gate)],
         "PostToolUse": [
-            _entry("mcp__brain__brain_search",   f'touch "{_SEARCH_FLAG}"'),
-            _entry("mcp__brain__brain_evidence", f'touch "{_SEARCH_FLAG}"'),
-            _entry("mcp__brain__brain_update",   f'touch "{_WRITE_FLAG}"'),
+            _entry("mcp__brain__brain_update", f'touch "{_WRITE_FLAG}"'),
         ],
         "Stop": [_entry("", write_reminder)],
     }
