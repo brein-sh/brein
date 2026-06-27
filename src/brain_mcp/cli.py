@@ -82,8 +82,14 @@ def build_parser() -> argparse.ArgumentParser:
     cc.set_defaults(func=_cmd_consistency)
 
     ev = sub.add_parser("eval", help="Continuous A/B eval (LLM-gated)")
-    ev.add_argument("eval_action", choices=["tick"],
-                    help="tick: read job JSON from stdin, gate, conditionally run A/B")
+    ev.add_argument(
+        "eval_action", choices=["tick", "observe"],
+        help=("tick: read job JSON from stdin, gate, conditionally run A/B. "
+              "observe: Claude Code PostToolUse hook — fires eval when a "
+              "Grep/Read targets a path under $BRAIN_REPO."),
+    )
+    ev.add_argument("--prompt-file", default="",
+                    help="Path to the saved user prompt (for `observe`)")
     ev.set_defaults(func=_cmd_eval)
 
     dm = sub.add_parser(
@@ -101,7 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
 def _cmd_eval(args: argparse.Namespace) -> int:
     """`brein eval tick` — run by the detached eval worker. Reads a JSON job
     from stdin: {question, evidence_block, query_hash, trigger}, then runs
-    the LLM gate, and if the gate says yes, the full A/B comparison."""
+    the LLM gate, and if the gate says yes, the full A/B comparison.
+
+    `brein eval observe --prompt-file PATH` — Claude Code PostToolUse hook
+    entry. Receives the tool's input JSON on stdin; if the tool targeted a
+    path under $BRAIN_REPO, spawns a detached eval worker using the saved
+    user prompt as the question. Lets us benchmark grep/read of the brain
+    repo as if they were brain_search calls.
+    """
     import json
     from . import eval as _eval
 
@@ -118,6 +131,65 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             trigger=payload.get("trigger", "manual"),
         )
         return 0
+
+    if args.eval_action == "observe":
+        # Silent on every failure — never block Claude Code's tool pipeline.
+        try:
+            from .config import REPO_PATH
+            raw = sys.stdin.read() or "{}"
+            try:
+                envelope = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return 0
+            # Claude Code PostToolUse stdin shape varies across versions;
+            # check common nesting points.
+            tool_input = (
+                envelope.get("tool_input")
+                or envelope.get("input")
+                or envelope
+            )
+            path = (
+                tool_input.get("file_path")
+                or tool_input.get("path")
+                or tool_input.get("notebook_path")
+                or ""
+            )
+            if not path:
+                return 0
+            try:
+                target = Path(path).expanduser().resolve()
+            except (OSError, RuntimeError):
+                return 0
+            try:
+                target.relative_to(REPO_PATH)
+            except ValueError:
+                return 0  # path is not under brain repo — ignore
+            prompt_path = Path(args.prompt_file or "")
+            if not prompt_path or not prompt_path.exists():
+                return 0
+            try:
+                question = prompt_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return 0
+            if not question:
+                return 0
+            if not _eval.EVAL_ENABLED or _eval.EVAL_GUARDED:
+                return 0
+            if not _eval._which_cli() and not _eval._OR_KEY:
+                return 0
+            query_hash = _eval._hash(question)
+            if _eval._seen_recently(query_hash):
+                return 0
+            _eval._spawn_eval_worker(
+                question=question,
+                evidence_block=f"(observed via tool: {path})",
+                query_hash=query_hash,
+                trigger="tool_observe",
+            )
+        except Exception:
+            pass
+        return 0
+
     return 2
 
 

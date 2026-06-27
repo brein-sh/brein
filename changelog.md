@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.12] - 2026-06-27
+
+### Added
+- **Eval now benchmarks plain `Grep`/`Read`/`Glob` against the brain repo**, not just MCP tool calls. Two new Claude Code hooks:
+  - `UserPromptSubmit` captures the prompt to `/tmp/claude-brein-last-prompt-$SESSION`.
+  - `PostToolUse` on `Read|Grep|Glob` runs `brein eval observe`, which checks whether the tool targeted a path under `$BRAIN_REPO` and — if so — spawns a detached eval worker using the saved prompt as the question. Same LLM gate, dedup, and conditional A/B as the MCP-tool path.
+  - Closes the gap from 0.5.11: even when Claude routes a brain question through grep instead of `brain_search`, we still get a measurement of whether the brain helped.
+
 ## [0.5.11] - 2026-06-27
 
 ### Added

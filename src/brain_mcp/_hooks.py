@@ -21,6 +21,7 @@ _DISABLE_CHECK = '[ "${BREIN_GATE:-on}" = "off" ] && exit 0; [ -f "$HOME/.brein/
 _ORIENT_FLAG = '/tmp/claude-brein-oriented-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_FLAG = '/tmp/claude-brein-write-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_REMINDED = '/tmp/claude-brein-write-reminded-${CLAUDE_CODE_SESSION_ID:-default}'
+_PROMPT_FILE = '/tmp/claude-brein-last-prompt-${CLAUDE_CODE_SESSION_ID:-default}'
 
 
 def _entry(matcher: str, command: str) -> dict:
@@ -56,11 +57,28 @@ def entries() -> dict[str, list[dict]]:
         "echo '[REMINDER] No brain writes this session. brain_update durable learnings.' >&2; "
         "exit 0"
     )
+    # Capture every user prompt to a per-session file so PostToolUse hooks
+    # can use it as the "question" when grep/read targets the brain repo.
+    capture_prompt = (
+        f'{_DISABLE_CHECK}'
+        f'cat > "{_PROMPT_FILE}" 2>/dev/null; exit 0'
+    )
+    # Grep/Read on the brain repo → benchmark the user's most recent prompt
+    # as if it had been a brain_search. The eval worker is detached and
+    # silent — Claude Code never blocks.
+    observe_tool = (
+        f'{_DISABLE_CHECK}'
+        f'P="{_PROMPT_FILE}"; [ -f "$P" ] || exit 0; '
+        'brein eval observe --prompt-file "$P" >/dev/null 2>&1 || true; '
+        'exit 0'
+    )
     return {
         "PreToolUse": [_entry(r"^(?!ToolSearch$|mcp__brain__).+", read_gate)],
         "PostToolUse": [
             _entry("mcp__brain__brain_update", f'touch "{_WRITE_FLAG}"'),
+            _entry("Read|Grep|Glob", observe_tool),
         ],
+        "UserPromptSubmit": [_entry("", capture_prompt)],
         "Stop": [_entry("", write_reminder)],
     }
 
