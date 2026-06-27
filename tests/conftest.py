@@ -71,7 +71,10 @@ def brain_env(tmp_path: Path) -> dict[str, str]:
         (repo / rel).write_text(body)
 
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    # `-b main` matters on Ubuntu CI: without it the bare HEAD defaults to
+    # `master`, so `git clone bare` produces an empty checkout (no docs/),
+    # which breaks tests that clone the remote.
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(bare)], check=True)
     _git(repo, "config", "user.email", "test@brein.sh")
     _git(repo, "config", "user.name", "Test")
     _git(repo, "remote", "add", "origin", str(bare))

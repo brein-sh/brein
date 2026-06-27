@@ -8,3 +8,4 @@ vector-index.json
 
 # eval cases are user/org-specific — bring your own.
 evals/
+.claude/

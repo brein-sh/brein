@@ -52,7 +52,7 @@ def _doc(title: str, body: str) -> str:
 
 def _git_log(repo: Path) -> list[str]:
     out = subprocess.run(
-        ["git", "-C", str(repo), "log", "--format=%s"],
+        ["git", "-C", str(repo), "log", "--format=%s", "refs/heads/main"],
         check=True, capture_output=True, text=True,
     ).stdout.strip().splitlines()
     return out
@@ -172,7 +172,7 @@ def test_two_updates_different_files_both_land(brain_env):
     # Bare remote should have both commits as well
     bare = Path(brain_env["BRAIN_REPO"]).parent / "brain.git"
     remote_log = subprocess.run(
-        ["git", "-C", str(bare), "log", "--format=%s"],
+        ["git", "-C", str(bare), "log", "--format=%s", "refs/heads/main"],
         check=True, capture_output=True, text=True,
     ).stdout
     assert "diff-A" in remote_log and "diff-B" in remote_log, (
@@ -316,7 +316,7 @@ def test_many_concurrent_updates_all_land(brain_env):
 
     bare = repo.parent / "brain.git"
     remote_log = subprocess.run(
-        ["git", "-C", str(bare), "log", "--format=%s"],
+        ["git", "-C", str(bare), "log", "--format=%s", "refs/heads/main"],
         check=True, capture_output=True, text=True,
     ).stdout
     landed_remote = [m for m in msgs if m in remote_log]

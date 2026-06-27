@@ -10,6 +10,7 @@ the underlying issue — failures are the finding.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -243,6 +244,8 @@ def test_long_path_component(brain_env):
 # ── Case collision (macOS APFS is case-insensitive by default) ──────────────
 
 
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="case-insensitive fs assumption only holds on macOS APFS")
 def test_case_collision_macos(brain_env):
     """Write `docs/CASEFOO.md`, then write `docs/casefoo.md`. On case-
     insensitive APFS the second write replaces the first silently, and
