@@ -48,6 +48,8 @@ EVAL_GUARD_ENV = "BRAIN_EVAL_IN_PROGRESS"
 EVAL_GUARDED = os.environ.get(EVAL_GUARD_ENV) == "1"
 
 EVAL_LOG_PATH = REPO_PATH / ".brain" / "eval-log.jsonl"
+EVAL_SEEN_PATH = Path(os.path.expanduser("~")) / ".brein" / "eval-seen.jsonl"
+EVAL_DEDUP_HOURS = float(os.environ.get("BRAIN_EVAL_DEDUP_HOURS", "24"))
 
 # CLI preference order; first match wins. Override with BRAIN_EVAL_CLIENT.
 _CLI_PREFERENCE = (os.environ.get("BRAIN_EVAL_CLIENT") or "claude,codex,gemini").split(",")
@@ -80,15 +82,69 @@ def _hash(text: str) -> str:
 
 
 def _trigger(answer_text: str, query_hash: str) -> str | None:
+    # In-process novel_hash is useless under stdio MCP (every tool call is a
+    # fresh process) — persistent dedup happens in _tick instead. We just
+    # surface whether the upstream text looked like a "don't know" so the
+    # gate prompt can weight it higher.
     if not answer_text:
-        return None
+        return "novel"
     if any(p.search(answer_text) for p in _DONT_KNOW_PATTERNS):
         return "dont_know"
-    with _seen_lock:
-        if query_hash not in _seen_query_hashes:
-            _seen_query_hashes.add(query_hash)
-            return "novel_hash"
-    return None
+    return "novel"
+
+
+# ── Persistent dedup + skipped-log helpers ──────────────────────────────
+
+def _seen_recently(query_hash: str, hours: float = EVAL_DEDUP_HOURS) -> bool:
+    """True if an eval (or gate decision) for this query_hash was recorded
+    in the last `hours`. Cheap linear scan — file stays small."""
+    if not EVAL_SEEN_PATH.exists():
+        return False
+    cutoff = time.time() - hours * 3600
+    try:
+        with EVAL_SEEN_PATH.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("query_hash") == query_hash and row.get("ts_unix", 0) >= cutoff:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _mark_seen(query_hash: str, decision: str) -> None:
+    try:
+        EVAL_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with EVAL_SEEN_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts_unix": time.time(),
+                "query_hash": query_hash,
+                "decision": decision,
+            }) + "\n")
+    except OSError:
+        pass
+
+
+def _log_gate_skip(question: str, query_hash: str, trigger: str, gate_meta: dict) -> None:
+    """Write a skipped-row to eval-log.jsonl so we can see the gate worked
+    without spending the full A/B budget."""
+    try:
+        EVAL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with EVAL_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "kind": "gate_skipped",
+                "query_hash": query_hash,
+                "trigger": trigger,
+                "question": question[:500],
+                "gate": gate_meta,
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 # ── Inference: CLI first, OpenRouter fallback ────────────────────────────
@@ -360,22 +416,107 @@ def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -
         pass
 
 
+def _llm_gate(question: str, evidence_block: str) -> tuple[bool, dict[str, Any]]:
+    """Cheap LLM judge: is this query worth the full A/B benchmark?
+
+    One short prompt, one-word answer. Runs without the brain MCP so the
+    gate decision can't be biased by the very system we're evaluating.
+    """
+    prompt = (
+        "You gate a costly background A/B benchmark on the user's knowledge "
+        "base. Run it ONLY when the query is significant: a turning point in "
+        "a conversation, an essential fact-check, a high-stakes decision, or "
+        "a question whose answer would change real action. SKIP routine "
+        "browsing, trivial lookups, name pings, repeated checks.\n\n"
+        f"Question: {question[:500]}\n"
+        f"Brain evidence preview: {evidence_block[:500]}\n\n"
+        "Answer with one word only: yes or no."
+    )
+    text, _backend, meta = _ask(prompt, disable_brain=True)
+    answer = (text or "").strip().lower()
+    decided = answer.startswith("y")
+    return decided, {"raw": (text or "")[:80], "decision": "yes" if decided else "no", **meta}
+
+
+def _tick(question: str, evidence_block: str, query_hash: str, trigger: str) -> None:
+    """Detached worker: dedup → LLM gate → conditional A/B → log.
+
+    Always called in a detached subprocess so it survives the MCP server
+    process exit. Failures are silently swallowed.
+    """
+    try:
+        if _seen_recently(query_hash):
+            return
+        if not _which_cli() and not _OR_KEY:
+            return
+        decided, gate_meta = _llm_gate(question, evidence_block)
+        if not decided:
+            _mark_seen(query_hash, "gate_skipped")
+            _log_gate_skip(question, query_hash, trigger, gate_meta)
+            return
+        _mark_seen(query_hash, "ab_run")
+        _run_ab(question, evidence_block, trigger, query_hash)
+    except Exception:
+        # Telemetry must never break the host.
+        pass
+
+
 def maybe_eval(question: str, evidence_block: str, brain_answer_preview: str = "") -> None:
-    """Public entrypoint. Non-blocking. Fire-and-forget daemon thread."""
+    """Public entrypoint. Spawns a detached subprocess so the eval survives
+    the MCP server process exiting (which it does immediately after every
+    stdio tool call). Non-blocking from the caller's perspective."""
     if not EVAL_ENABLED or EVAL_GUARDED:
         return
     if not question.strip():
         return
-    # Need *some* inference backend.
     if not _which_cli() and not _OR_KEY:
         return
     query_hash = _hash(question)
-    trigger = _trigger(brain_answer_preview or evidence_block, query_hash)
-    if not trigger:
+    trigger = _trigger(brain_answer_preview or evidence_block, query_hash) or "novel"
+    # Cheap pre-spawn dedup — saves a fork if we already know we'd skip.
+    if _seen_recently(query_hash):
         return
-    threading.Thread(
-        target=_run_ab,
-        args=(question, evidence_block, trigger, query_hash),
-        name="brain-eval-ab",
-        daemon=True,
-    ).start()
+    _spawn_eval_worker(question, evidence_block, query_hash, trigger)
+
+
+def _spawn_eval_worker(question: str, evidence_block: str, query_hash: str, trigger: str) -> None:
+    """Double-fork-equivalent: start_new_session detaches us from the parent
+    process group so the MCP server's exit doesn't take us down."""
+    payload = json.dumps({
+        "question": question,
+        "evidence_block": evidence_block,
+        "query_hash": query_hash,
+        "trigger": trigger,
+    })
+    log_path = EVAL_LOG_PATH.parent / "eval-worker.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_path, "ab", buffering=0)
+    except OSError:
+        log_fh = subprocess.DEVNULL  # type: ignore[assignment]
+    import sys as _sys  # local import to avoid touching module-level deps
+    # Use the SAME Python interpreter the server is running under, via the
+    # importable module. `shutil.which("brein")` would resolve to a
+    # globally-installed copy that may be older than the running code (the
+    # `eval` subcommand might not exist there yet). The module path always
+    # matches the running process.
+    cmd = [_sys.executable, "-m", "brain_mcp.cli", "eval", "tick"]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(payload.encode("utf-8"))
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+    except (FileNotFoundError, OSError):
+        # No brein on PATH (uncommon) — silently degrade. The synchronous
+        # `brain-eval` CLI still works.
+        pass

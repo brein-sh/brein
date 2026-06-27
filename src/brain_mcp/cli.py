@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("path", nargs="?", help="repo-relative or absolute path to the written doc (for check/spawn)")
     cc.set_defaults(func=_cmd_consistency)
 
+    ev = sub.add_parser("eval", help="Continuous A/B eval (LLM-gated)")
+    ev.add_argument("eval_action", choices=["tick"],
+                    help="tick: read job JSON from stdin, gate, conditionally run A/B")
+    ev.set_defaults(func=_cmd_eval)
+
     dm = sub.add_parser(
         "daemon",
         help="Run a shared HTTP MCP daemon (one model load, many clients)",
@@ -91,6 +96,29 @@ def build_parser() -> argparse.ArgumentParser:
     dm.set_defaults(func=_cmd_daemon)
 
     return p
+
+
+def _cmd_eval(args: argparse.Namespace) -> int:
+    """`brein eval tick` — run by the detached eval worker. Reads a JSON job
+    from stdin: {question, evidence_block, query_hash, trigger}, then runs
+    the LLM gate, and if the gate says yes, the full A/B comparison."""
+    import json
+    from . import eval as _eval
+
+    if args.eval_action == "tick":
+        try:
+            payload = json.loads(sys.stdin.read())
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(f"eval tick: invalid stdin JSON: {exc}", file=sys.stderr)
+            return 2
+        _eval._tick(
+            question=payload.get("question", ""),
+            evidence_block=payload.get("evidence_block", ""),
+            query_hash=payload.get("query_hash") or _eval._hash(payload.get("question", "")),
+            trigger=payload.get("trigger", "manual"),
+        )
+        return 0
+    return 2
 
 
 def _cmd_consistency(args: argparse.Namespace) -> int:

@@ -4,6 +4,15 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.9] - 2026-06-27
+
+### Fixed
+- **A/B eval actually runs now.** Previously `maybe_eval` was wired only to `brain_evidence` and ran the A/B in a `threading.Thread(daemon=True)` — which got killed the moment the stdio MCP process exited (i.e. always). The eval log hadn't gained a row since the last manual `brain-eval` run. Now:
+  - Eval is wired into `brain_search` in addition to `brain_evidence`.
+  - The worker is a detached subprocess (`brein eval tick` over `start_new_session=True`) so it survives the MCP server's exit, same pattern as the consistency checker.
+  - Persistent dedup at `~/.brein/eval-seen.jsonl` skips queries already evaluated in the last `BRAIN_EVAL_DEDUP_HOURS` (default 24h).
+  - **LLM gate before the A/B**: one cheap "is this query significant — yes/no" call decides whether to spend the full A/B budget. Routine lookups produce a `kind: "gate_skipped"` row; meaningful queries trigger a full A/B with a verdict row. Both cases land in `eval-log.jsonl` so you can see the gate working.
+
 ## [0.5.8] - 2026-06-27
 
 ### Security / Data integrity

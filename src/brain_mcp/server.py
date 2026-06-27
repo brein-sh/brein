@@ -262,6 +262,14 @@ def brain_search(
         query, [r["path"] for r in top], None, "search_vector",
         kind="search", extra={"backend": vector_meta.get("backend")},
     )
+    # Fire-and-forget LLM-gated A/B eval. Spawned as a detached subprocess
+    # in maybe_eval, so it survives this MCP server's exit. Skipped if the
+    # gate decides the query isn't significant, or if we've already evaluated
+    # this query_hash in the last 24h. See src/brain_mcp/eval.py.
+    evidence_preview = "\n".join(
+        f"- {r['path']} (score={r.get('score'):.3f})" for r in top
+    )
+    maybe_eval(question=query, evidence_block=evidence_preview)
     return _json({
         "status": "ready",
         "query": query,
