@@ -40,6 +40,10 @@ EVOLVE_LOG_PATH = Path(os.path.expanduser("~")) / ".brein" / "evolve-log.jsonl"
 EVOLVE_PROGRESS_PATH = Path(os.path.expanduser("~")) / ".brein" / "evolve-progress.jsonl"
 EVOLVE_TRIGGER_EVERY = int(os.environ.get("BRAIN_EVOLVE_EVERY", "50"))
 EVOLVE_TIMEOUT_SECONDS = float(os.environ.get("BRAIN_EVOLVE_TIMEOUT_S", "900"))
+# Per-loss agentic LLM calls are independent (different canonical doc each)
+# and each takes 30-90s. Fan out across a thread pool — claude CLI calls
+# are blocking subprocess.run, so threads (not processes) are right.
+EVOLVE_PARALLELISM = int(os.environ.get("BRAIN_EVOLVE_PARALLELISM", "8"))
 EVOLVE_GUARD_ENV = "BRAIN_EVOLVE_IN_PROGRESS"
 
 
@@ -279,61 +283,95 @@ def read_log(limit: int = 20) -> list[dict[str, Any]]:
 
 # ── public entrypoints ─────────────────────────────────────────────────
 
-def run_evolve(limit: int = 50) -> EvolveResult:
-    """Foreground evolve cycle. Iterates recent no-brain wins, attempts to
-    improve each, commits + pushes one combined edit at the end.
-
-    Writes a per-loss progress row (start + end) to EVOLVE_PROGRESS_PATH so
-    `tail -f` shows a live cursor mid-run.
-    """
+def _evolve_one_loss_with_progress(
+    i: int, total: int, loss: dict[str, Any], cycle_id: str,
+    counters: dict[str, int], counters_lock: Any,
+) -> dict[str, Any]:
+    """Run one loss + write loss_start/loss_end progress rows around it.
+    Designed for parallel execution — each call is independent except for
+    the shared (lock-guarded) running counters."""
     import time as _time
+    q_short = (loss.get("question", "") or "")[:100]
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "event": "loss_start",
+        "index": i, "total": total, "question": q_short,
+    })
+    t0 = _time.perf_counter()
+    try:
+        outcome = _evolve_one_loss(loss)
+    except Exception as exc:
+        outcome = {
+            "kind": "error",
+            "summary": f"{type(exc).__name__}: {exc}",
+            "edits_applied": False,
+            "question": loss.get("question", "")[:160],
+        }
+    elapsed = round(_time.perf_counter() - t0, 1)
+    kind = outcome.get("kind")
+    with counters_lock:
+        if kind == "improved":
+            counters["improved"] += 1
+        elif kind == "escalated":
+            counters["escalated"] += 1
+        else:
+            counters["skipped"] += 1
+        snapshot = dict(counters)
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "event": "loss_end",
+        "index": i, "total": total,
+        "question": q_short,
+        "kind": kind,
+        "summary": (outcome.get("summary") or "")[:240],
+        "escalation_reason": outcome.get("escalation_reason"),
+        "canonical_path": outcome.get("canonical_path"),
+        "edits_applied": bool(outcome.get("edits_applied")),
+        "elapsed_s": elapsed,
+        "running_totals": snapshot,
+    })
+    return outcome
+
+
+def run_evolve(limit: int = 50) -> EvolveResult:
+    """Foreground evolve cycle. Reads recent no-brain wins and fans them
+    out across EVOLVE_PARALLELISM threads (default 8). Each loss = one
+    independent ask_llm call against (typically) a different canonical
+    doc, so they parallelize cleanly. Combined commit + push at the end.
+
+    Per-loss progress is logged to EVOLVE_PROGRESS_PATH including the
+    agent's `summary` and `escalation_reason` so reasons are visible live.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     started = _now_iso()
     cycle_id = uuid.uuid4().hex[:8]
     losses = _read_recent_losses(limit=limit)
     total = len(losses)
     detail: list[dict[str, Any]] = []
-    improved = escalated = skipped = 0
+    counters = {"improved": 0, "escalated": 0, "skipped": 0}
+    counters_lock = threading.Lock()
 
     _append_progress({
         "ts": _now_iso(), "cycle_id": cycle_id, "event": "cycle_start",
-        "total_losses": total,
+        "total_losses": total, "parallelism": EVOLVE_PARALLELISM,
     })
 
-    for i, loss in enumerate(losses, start=1):
-        q_short = (loss.get("question", "") or "")[:100]
-        _append_progress({
-            "ts": _now_iso(), "cycle_id": cycle_id, "event": "loss_start",
-            "index": i, "total": total, "question": q_short,
-        })
-        t0 = _time.perf_counter()
-        try:
-            outcome = _evolve_one_loss(loss)
-        except Exception as exc:
-            outcome = {
-                "kind": "error",
-                "summary": f"{type(exc).__name__}: {exc}",
-                "edits_applied": False,
-                "question": loss.get("question", "")[:160],
-            }
-        elapsed = round(_time.perf_counter() - t0, 1)
-        detail.append(outcome)
-        kind = outcome.get("kind")
-        if kind == "improved":
-            improved += 1
-        elif kind == "escalated":
-            escalated += 1
-        else:
-            skipped += 1
-        _append_progress({
-            "ts": _now_iso(), "cycle_id": cycle_id, "event": "loss_end",
-            "index": i, "total": total,
-            "question": q_short,
-            "kind": kind, "edits_applied": bool(outcome.get("edits_applied")),
-            "elapsed_s": elapsed,
-            "running_totals": {
-                "improved": improved, "escalated": escalated, "skipped": skipped,
-            },
-        })
+    if losses:
+        max_workers = max(1, min(EVOLVE_PARALLELISM, total))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [
+                pool.submit(
+                    _evolve_one_loss_with_progress,
+                    i, total, loss, cycle_id, counters, counters_lock,
+                )
+                for i, loss in enumerate(losses, start=1)
+            ]
+            for fut in as_completed(futures):
+                detail.append(fut.result())
+
+    improved = counters["improved"]
+    escalated = counters["escalated"]
+    skipped = counters["skipped"]
 
     commit_summary = f"{improved}/{len(losses)} losses patched"
     commit_info = _commit_all_edits(commit_summary) if improved else None

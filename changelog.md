@@ -4,6 +4,12 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.28] - 2026-06-28
+
+### Changed
+- **Evolve now fans losses across a thread pool** (default `BRAIN_EVOLVE_PARALLELISM=8`). v0.5.27 ran 13 losses sequentially at ~40-90s each — 9-20 min per cycle. Each loss is one independent `ask_llm` against a different canonical doc; nothing was actually serial except a `for` loop. Now 13 losses finish in ~max(90s) ≈ 1.5 min at the same total dollar cost. Combined `evolve:` commit + push still serializes at the end under the same write lock. If two parallel agents somehow race on the same canonical doc, last-write-wins at the file level; git status at commit time captures whatever survives.
+- **`loss_end` progress rows now carry `summary`, `escalation_reason`, `canonical_path`.** v0.5.27 logged just `kind` and `elapsed_s`, so a string of `skipped` results was a mystery until cycle_end. Now `tail -f ~/.brein/evolve-progress.jsonl` shows WHY each loss skipped/escalated/improved as it happens. Same observability-is-not-data rule — write failures swallowed.
+
 ## [0.5.27] - 2026-06-28
 
 ### Added

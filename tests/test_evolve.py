@@ -186,6 +186,76 @@ def test_run_evolve_appends_result_row(monkeypatch, tmp_path):
     assert rows[0]["losses_improved"] == 1
 
 
+def test_loss_end_row_includes_agent_summary(monkeypatch, tmp_path):
+    """v0.5.28: agent's `summary` and `escalation_reason` must land in the
+    loss_end progress row so reasons are visible live, not only at cycle_end."""
+    from brain_mcp import evolve, shared
+
+    eval_log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(eval_log, [
+        {"verdict": "no_brain_better", "question": "q",
+         "brain_answer": "x", "no_brain_answer": "y", "reason": "r"},
+    ])
+    progress = tmp_path / "progress.jsonl"
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", eval_log)
+    monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve-log.jsonl")
+    monkeypatch.setattr(evolve, "EVOLVE_PROGRESS_PATH", progress)
+
+    skipped = json.dumps({
+        "kind": "skipped", "confidence": "low",
+        "canonical_path": None,
+        "verified_refs_added": [],
+        "edits_applied": False,
+        "summary": "no canonical doc matches this question",
+        "escalation_reason": None,
+    })
+    monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (skipped, "cli:fake", {}))
+
+    evolve.run_evolve(limit=50)
+
+    rows = [json.loads(l) for l in progress.read_text().splitlines() if l.strip()]
+    end_rows = [r for r in rows if r["event"] == "loss_end"]
+    assert end_rows[0]["summary"] == "no canonical doc matches this question"
+    assert "escalation_reason" in end_rows[0]
+    assert "canonical_path" in end_rows[0]
+
+
+def test_run_evolve_parallelizes_across_losses(monkeypatch, tmp_path):
+    """v0.5.28: 8 losses each sleeping 0.3s should finish in well under
+    sequential time (2.4s). Parallelism cap is EVOLVE_PARALLELISM (default 8)."""
+    import time as _t
+    from brain_mcp import evolve, shared
+
+    eval_log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(eval_log, [
+        {"verdict": "no_brain_better", "question": f"q{i}",
+         "brain_answer": "x", "no_brain_answer": "y", "reason": "r"}
+        for i in range(8)
+    ])
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", eval_log)
+    monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve-log.jsonl")
+    monkeypatch.setattr(evolve, "EVOLVE_PROGRESS_PATH", tmp_path / "progress.jsonl")
+    monkeypatch.setattr(evolve, "EVOLVE_PARALLELISM", 8)
+
+    skipped = json.dumps({
+        "kind": "skipped", "confidence": "low",
+        "canonical_path": None, "verified_refs_added": [],
+        "edits_applied": False, "summary": "x", "escalation_reason": None,
+    })
+    def slow_ask(*a, **kw):
+        _t.sleep(0.3)
+        return (skipped, "cli:fake", {})
+    monkeypatch.setattr(shared, "ask_llm", slow_ask)
+
+    t0 = _t.perf_counter()
+    result = evolve.run_evolve(limit=50)
+    wall = _t.perf_counter() - t0
+
+    # Sequential would take 8 * 0.3 = 2.4s; parallel should be well under 1s.
+    assert result.losses_examined == 8
+    assert wall < 1.5, f"expected parallel < 1.5s, got {wall:.2f}s — likely serial regression"
+
+
 def test_run_evolve_writes_per_loss_progress(monkeypatch, tmp_path):
     """Progress log gets cycle_start + per-loss start/end + cycle_end rows.
     Tailable via `tail -f ~/.brein/evolve-progress.jsonl`."""
