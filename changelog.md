@@ -4,6 +4,19 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.22] - 2026-06-28
+
+### Added
+- **`brain_read` is now an actual MCP tool.** The eval data shows 13% of A/B losses are cases where the brain arm found the right doc via `brain_search` but never got the body — there was no exposed "give me the full doc at this path" tool. An internal `brain_read` helper existed for `brain_evidence` but was never registered as `@mcp.tool`, so agents fell back to vanilla `Read` (no path-safety, no telemetry, no `MAX_READ_CHARS` envelope). Now `brain_read(file_path)` is callable directly, returns the full body up to 80k chars, parses frontmatter for the caller, and logs a `kind: "read"` row so retrieval analytics see direct loads alongside search/evidence.
+
+### Changed
+- **`brain_evidence` no longer hard-truncates doc excerpts at 2500 chars.** Same eval-data motivation: 2500 chars silently chopped small canonical decision docs (often 4–6k) mid-sentence, so the answering agent got a fragment of the very thing it asked for. Raised the per-doc excerpt cap to 8000; single-doc bundles return the full body. Multi-doc bundles still get capped to protect context, but at a level where a typical decision doc survives intact.
+- **`brain_search` now applies a deterministic post-rank boost for `source_of_truth: true` + recency.** Vector similarity alone can rank a narrative note equal-to-or-above the canonical doc that actually settles the topic — exactly the loss pattern dominating our internal/mixed no-brain wins. The new pass adds +0.05 for `source_of_truth: true` and up to +0.02 for fresh `last_reviewed`/`decided` dates (linear decay over 3 years). Small enough that a clearly-better vector hit still wins; large enough that ties go to the doc that arbitrates.
+- **Dropped the `SIMILAR_THRESHOLD = 0.80` filter in the consistency checker.** Now that the post-write judge is agentic and costs ~$0.30/call, hardcoding "below 0.80 vec_score = don't bother judging" was paternalism — a real near-conflict at 0.78 was getting silently dropped. The agent already sees `vec_score=X.XXX` in each NEIGHBOR header and can decide "weak overlap → kind: ok" itself in one cheap turn. Saves zero meaningful money; removes a silent-miss class.
+
+### Fixed
+- **`publish.yml` no longer tries to `sed`-rewrite a pyproject.toml `version =` line that hasn't existed since v0.5.18.** Both v0.5.20 and v0.5.21 published locally but never made it to PyPI because the workflow's "Sync pyproject.toml version" step ran a sed that matched nothing (fine), then `grep -E '^version = '` which failed under `set -e` (since the project switched to `dynamic = ["version"]` reading from `changelog.md` via hatch). Dead step removed; version is sourced dynamically at build time and the auto-tag flow already guarantees the changelog heading is in the checkout.
+
 ## [0.5.21] - 2026-06-28
 
 ### Added

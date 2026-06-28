@@ -262,6 +262,75 @@ def _load_vector_index(directory: str = "docs", force_rebuild: bool = False, pro
     return index
 
 
+_RECENCY_CACHE: dict[str, str | None] = {}
+
+
+def _doc_date_str(rel: str) -> str | None:
+    """Pull `last_reviewed` or `decided` from a doc's frontmatter.
+
+    Cached per process — frontmatter parse is cheap but we hit this on every
+    top-K rerank pass. Stored even when None to avoid re-reading missing fields.
+    """
+    if rel in _RECENCY_CACHE:
+        return _RECENCY_CACHE[rel]
+    try:
+        full = _safe_path(rel)
+        text = full.read_text(encoding="utf-8")
+        fm = _frontmatter(text)
+        date = fm.get("last_reviewed") or fm.get("decided")
+        date_str = str(date).strip() if date else None
+    except Exception:
+        date_str = None
+    _RECENCY_CACHE[rel] = date_str
+    return date_str
+
+
+def _post_rank_boost(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deterministic tiebreaker pass over vector hits.
+
+    Why: the 13% no-brain-win bucket in our A/B eval is dominated by narrative
+    notes ranking equal-or-above the canonical decision doc that arbitrates a
+    topic. Vector similarity alone can't tell which doc *settles* the question.
+    We nudge — not replace — vector order using:
+
+        source_of_truth: true      → +0.05
+        recent last_reviewed/decided → up to +0.02 (linear over ~3 years)
+
+    Bumps are small enough that a clearly-better vector hit still wins. Adds
+    `boosted_score` so the caller can see what happened; `vector_score` stays
+    untouched for telemetry parity.
+    """
+    if not hits:
+        return hits
+    today = datetime.now(timezone.utc).date()
+    boosted: list[dict[str, Any]] = []
+    for hit in hits:
+        bonus = 0.0
+        signals: dict[str, Any] = {}
+        if str(hit.get("source_of_truth", "")).lower() == "true":
+            bonus += 0.05
+            signals["source_of_truth"] = True
+        date_str = _doc_date_str(hit["path"])
+        if date_str:
+            try:
+                doc_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                age_days = (today - doc_date).days
+                # Linear decay: same-day → +0.02, 3y old → 0. Older → 0 (no penalty).
+                recency = max(0.0, 0.02 * (1.0 - age_days / 1095.0))
+                if recency > 0:
+                    bonus += recency
+                    signals["recency"] = round(recency, 4)
+            except ValueError:
+                pass
+        new = dict(hit)
+        new["boost"] = round(bonus, 6)
+        new["boost_signals"] = signals
+        new["vector_score"] = hit["vector_score"] + bonus
+        boosted.append(new)
+    boosted.sort(key=lambda r: r["vector_score"], reverse=True)
+    return boosted
+
+
 def _best_vector_hits(query: str, directory: str, domain: str | None, tag: str | None, status: str | None, limit: int, force_rebuild: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     index = _load_vector_index(directory=directory, force_rebuild=force_rebuild)
     query_vec, backend = _embed_texts([query])
@@ -291,6 +360,7 @@ def _best_vector_hits(query: str, directory: str, domain: str | None, tag: str |
                 "vector_snippet": {"line": entry.get("line", 1), "snippet": entry.get("text", "")[:1200]},
             }
     hits = sorted(by_doc.values(), key=lambda r: r["vector_score"], reverse=True)[:limit]
+    hits = _post_rank_boost(hits)
     health = _vector_health()
     return hits, {
         "backend": backend,

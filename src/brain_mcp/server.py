@@ -346,18 +346,26 @@ def _progress_str(state) -> str | None:
     return f"{state.done}/{state.total} ({int(100 * state.done / state.total)}%)"
 
 
-# Internal helper — used by brain_evidence. No longer exposed as an MCP tool;
-# agents should use their normal Read/Glob/Grep tools against the brain repo.
+# Exposed MCP tool. Agents may also fall back to their own Read/Glob/Grep
+# tools against the brain repo for greppy lookups; brain_read is the path-safe,
+# telemetry-logged way to pull a full doc body in one call.
+@mcp.tool(name="brain_read")
 @logged("brain_read")
 def brain_read(file_path: str) -> str:
-    """Read a specific brain file by repo-relative path."""
+    """Return the full body of a brain doc by repo-relative path.
+
+    No truncation under MAX_READ_CHARS (80k default). Path is validated via
+    `_safe_path` (rejects .git, absolute paths, repo escape). Logs a 'read'
+    telemetry row so retrieval analytics see direct doc loads alongside
+    search/evidence.
+    """
     _ensure_repo()
     full = _safe_path(file_path)
     if not full.exists() or not full.is_file():
         return _json({"error": f"not found: {file_path}"})
     content = full.read_text(encoding="utf-8")
     rel = str(full.relative_to(REPO_PATH))
-    _append_retrieval_log(file_path, [rel], [rel], "read", kind="read")
+    _append_retrieval_log(f"read:{rel}", [rel], [rel], "read", kind="read")
     return _json({
         "path": rel,
         "frontmatter": _frontmatter(content),
@@ -390,7 +398,10 @@ def brain_evidence(question: str, max_docs: int = 5) -> str:
             "score": result.get("score"),
             "snippets": result.get("snippets", []),
             "frontmatter": read.get("frontmatter", {}),
-            "excerpt": content[:2500],
+            # 8000 (not 2500) so small canonical docs survive intact in the
+            # bundle. Single-doc bundles return full content to stop silent
+            # truncation of decisions that fit comfortably under MAX_READ_CHARS.
+            "excerpt": content if len(search.get("results", [])) <= 1 else content[:8000],
         })
     _append_retrieval_log(question, [u["path"] for u in used], [u["path"] for u in used], "evidence_bundle", kind="answer")
     # ponytail: kick off a non-blocking background A/B if eval is enabled and

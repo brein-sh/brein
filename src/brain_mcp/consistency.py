@@ -39,7 +39,6 @@ from .config import REPO_PATH, VECTOR_INDEX_PATH
 QUEUE_PATH = VECTOR_INDEX_PATH.with_name("consistency-queue.jsonl")
 AGENT_TIMEOUT_SECONDS = float(os.environ.get("BRAIN_CONSISTENCY_TIMEOUT_S", "300"))
 TOP_K_NEIGHBORS = 5
-SIMILAR_THRESHOLD = 0.80  # below this we don't even bother judging
 
 
 FindingKind = Literal["auto_merge", "contradiction", "unresolved", "ok"]
@@ -298,7 +297,10 @@ def run_check(write_path: str) -> Finding | None:
     rel = str(abs_path.relative_to(REPO_PATH)) if str(abs_path).startswith(str(REPO_PATH)) else str(abs_path)
 
     neighbors = _find_neighbors(rel, new_content, k=TOP_K_NEIGHBORS)
-    neighbors = [n for n in neighbors if n.get("vector_score", 0) >= SIMILAR_THRESHOLD]
+    # No hardcoded similarity floor — the agentic judge sees `vec_score=X.XXX`
+    # in each NEIGHBOR header and can decide "weak score, no real conflict" in
+    # one cheap turn. Filtering at 0.80 was silently dropping near-conflicts
+    # at 0.78 and the $0.30/judge cost is dwarfed by the misses.
     if not neighbors:
         return None
 

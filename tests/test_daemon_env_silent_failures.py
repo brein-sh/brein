@@ -349,3 +349,37 @@ def test_run_check_emits_finding_on_escalate(monkeypatch, tmp_path):
     assert finding.judge == "agentic"
     queue_lines = (tmp_path / "queue.jsonl").read_text().strip().splitlines()
     assert len(queue_lines) == 1
+
+
+# ── 7. After dropping SIMILAR_THRESHOLD (v0.5.22): a weak vector neighbor
+#       must still reach the agentic judge. Previously 0.42 < 0.80 → filtered
+#       out and run_check returned None without judging. The agent now sees
+#       `vec_score` per neighbor and decides itself.
+
+def test_run_check_low_score_neighbor_still_reaches_judge(monkeypatch, tmp_path):
+    from brain_mcp import consistency
+
+    doc = tmp_path / "docs" / "x.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("---\ntitle: x\n---\nhello\n")
+
+    monkeypatch.setattr(consistency, "REPO_PATH", tmp_path)
+    monkeypatch.setattr(consistency, "QUEUE_PATH", tmp_path / "queue.jsonl")
+    monkeypatch.setattr(
+        consistency, "_find_neighbors",
+        lambda *a, **kw: [{"path": "docs/y.md", "vector_score": 0.42, "vector_snippet": "..."}],
+    )
+
+    judge_calls: list[list[dict]] = []
+    def fake_judge(rel, content, neighbors):
+        judge_calls.append(neighbors)
+        return {
+            "kind": "ok", "confidence": "low", "summary": "weak overlap",
+            "canonical_path": None, "deprecated_paths": [],
+            "edits_applied": False, "escalation_reason": None,
+        }
+    monkeypatch.setattr(consistency, "_judge_agentic", fake_judge)
+
+    consistency.run_check("docs/x.md")
+    assert judge_calls, "judge was never called — low-score neighbor still being filtered"
+    assert judge_calls[0][0]["vector_score"] == 0.42
