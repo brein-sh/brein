@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.27] - 2026-06-28
+
+### Added
+- **`~/.brein/evolve-progress.jsonl` — per-loss cursor for in-flight evolve runs.** A real evolve cycle on 13 losses takes 30+ minutes, and v0.5.26 wrote nothing observable until the very end — making "where is the worker right now?" unanswerable except by `pgrep`-watching claude children and guessing. Now `run_evolve` appends `cycle_start`, `loss_start`, `loss_end`, `cycle_end` rows with index/total/question/elapsed_s/running_totals/cycle_id, so `tail -f ~/.brein/evolve-progress.jsonl` shows a live cursor. Safe to fail (progress = observability, not data); per-loss appends are atomic enough for tail-following.
+
 ## [0.5.26] - 2026-06-28
 
 ### Fixed

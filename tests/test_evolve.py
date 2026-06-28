@@ -186,6 +186,49 @@ def test_run_evolve_appends_result_row(monkeypatch, tmp_path):
     assert rows[0]["losses_improved"] == 1
 
 
+def test_run_evolve_writes_per_loss_progress(monkeypatch, tmp_path):
+    """Progress log gets cycle_start + per-loss start/end + cycle_end rows.
+    Tailable via `tail -f ~/.brein/evolve-progress.jsonl`."""
+    from brain_mcp import evolve, shared
+    import contextlib
+
+    eval_log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(eval_log, [
+        {"verdict": "no_brain_better", "question": "q1",
+         "brain_answer": "x", "no_brain_answer": "y", "reason": "r"},
+        {"verdict": "no_brain_better", "question": "q2",
+         "brain_answer": "x", "no_brain_answer": "y", "reason": "r"},
+    ])
+    progress = tmp_path / "progress.jsonl"
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", eval_log)
+    monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve-log.jsonl")
+    monkeypatch.setattr(evolve, "EVOLVE_PROGRESS_PATH", progress)
+
+    skipped = json.dumps({
+        "kind": "skipped", "confidence": "low",
+        "canonical_path": None, "verified_refs_added": [],
+        "edits_applied": False, "summary": "x", "escalation_reason": None,
+    })
+    monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (skipped, "cli:fake", {}))
+
+    evolve.run_evolve(limit=50)
+
+    rows = [json.loads(l) for l in progress.read_text().splitlines() if l.strip()]
+    events = [r["event"] for r in rows]
+    # cycle_start, then per-loss start/end pairs, then cycle_end.
+    assert events[0] == "cycle_start"
+    assert events[-1] == "cycle_end"
+    assert events.count("loss_start") == 2
+    assert events.count("loss_end") == 2
+    # Cursor info on every loss_end row.
+    end_rows = [r for r in rows if r["event"] == "loss_end"]
+    assert [r["index"] for r in end_rows] == [1, 2]
+    assert all("elapsed_s" in r and "running_totals" in r for r in end_rows)
+    # All rows share one cycle_id.
+    cycle_ids = {r["cycle_id"] for r in rows}
+    assert len(cycle_ids) == 1
+
+
 def test_cmd_evolve_does_not_nameerror_on_json(monkeypatch, capsys):
     """Regression: _cmd_evolve uses json.dumps; cli.py must import json.
     Caught in production v0.5.24 — `brein evolve run` died with

@@ -34,6 +34,10 @@ from .config import REPO_PATH
 
 EVAL_LOG_PATH = REPO_PATH / ".brain" / "eval-log.jsonl"
 EVOLVE_LOG_PATH = Path(os.path.expanduser("~")) / ".brein" / "evolve-log.jsonl"
+# Per-loss progress, written BEFORE and AFTER each loss so `tail -f` shows
+# a live cursor while evolve is mid-run (one cycle can take 30+ minutes
+# across 13 losses).
+EVOLVE_PROGRESS_PATH = Path(os.path.expanduser("~")) / ".brein" / "evolve-progress.jsonl"
 EVOLVE_TRIGGER_EVERY = int(os.environ.get("BRAIN_EVOLVE_EVERY", "50"))
 EVOLVE_TIMEOUT_SECONDS = float(os.environ.get("BRAIN_EVOLVE_TIMEOUT_S", "900"))
 EVOLVE_GUARD_ENV = "BRAIN_EVOLVE_IN_PROGRESS"
@@ -249,6 +253,17 @@ def append_result(result: EvolveResult) -> None:
         fh.write(json.dumps(result.to_json()) + "\n")
 
 
+def _append_progress(row: dict[str, Any]) -> None:
+    """Per-loss progress line. Safe to fail silently — progress logging
+    is observability, not data."""
+    try:
+        EVOLVE_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with EVOLVE_PROGRESS_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
 def read_log(limit: int = 20) -> list[dict[str, Any]]:
     if not EVOLVE_LOG_PATH.exists():
         return []
@@ -266,13 +281,31 @@ def read_log(limit: int = 20) -> list[dict[str, Any]]:
 
 def run_evolve(limit: int = 50) -> EvolveResult:
     """Foreground evolve cycle. Iterates recent no-brain wins, attempts to
-    improve each, commits + pushes one combined edit at the end."""
+    improve each, commits + pushes one combined edit at the end.
+
+    Writes a per-loss progress row (start + end) to EVOLVE_PROGRESS_PATH so
+    `tail -f` shows a live cursor mid-run.
+    """
+    import time as _time
     started = _now_iso()
+    cycle_id = uuid.uuid4().hex[:8]
     losses = _read_recent_losses(limit=limit)
+    total = len(losses)
     detail: list[dict[str, Any]] = []
     improved = escalated = skipped = 0
 
-    for loss in losses:
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "event": "cycle_start",
+        "total_losses": total,
+    })
+
+    for i, loss in enumerate(losses, start=1):
+        q_short = (loss.get("question", "") or "")[:100]
+        _append_progress({
+            "ts": _now_iso(), "cycle_id": cycle_id, "event": "loss_start",
+            "index": i, "total": total, "question": q_short,
+        })
+        t0 = _time.perf_counter()
         try:
             outcome = _evolve_one_loss(loss)
         except Exception as exc:
@@ -282,6 +315,7 @@ def run_evolve(limit: int = 50) -> EvolveResult:
                 "edits_applied": False,
                 "question": loss.get("question", "")[:160],
             }
+        elapsed = round(_time.perf_counter() - t0, 1)
         detail.append(outcome)
         kind = outcome.get("kind")
         if kind == "improved":
@@ -290,6 +324,16 @@ def run_evolve(limit: int = 50) -> EvolveResult:
             escalated += 1
         else:
             skipped += 1
+        _append_progress({
+            "ts": _now_iso(), "cycle_id": cycle_id, "event": "loss_end",
+            "index": i, "total": total,
+            "question": q_short,
+            "kind": kind, "edits_applied": bool(outcome.get("edits_applied")),
+            "elapsed_s": elapsed,
+            "running_totals": {
+                "improved": improved, "escalated": escalated, "skipped": skipped,
+            },
+        })
 
     commit_summary = f"{improved}/{len(losses)} losses patched"
     commit_info = _commit_all_edits(commit_summary) if improved else None
@@ -308,6 +352,12 @@ def run_evolve(limit: int = 50) -> EvolveResult:
         losses=detail,
     )
     append_result(result)
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "event": "cycle_end",
+        "total_losses": total,
+        "improved": improved, "escalated": escalated, "skipped": skipped,
+        "commit_sha": sha,
+    })
     return result
 
 
