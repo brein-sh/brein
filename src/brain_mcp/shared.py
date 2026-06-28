@@ -290,7 +290,7 @@ def _llm_cli_completion(
 ) -> tuple[str, dict[str, Any]]:
     """Headless completion via `<cli> -p <prompt>`.
 
-    allowed_tools: when set AND cli == "claude", passes `--allowed-tools` so
+    allowed_tools: when set AND Path(cli).name == "claude", passes `--allowed-tools` so
     the model can call Read/Grep/Glob/Edit. Other CLIs ignore (one-shot only).
     """
     env = os.environ.copy()
@@ -300,11 +300,11 @@ def _llm_cli_completion(
     cwd = cwd or os.path.expanduser("~")
     prompt_chars = len(prompt)
 
-    use_json = (cli == "claude")
+    use_json = (Path(cli).name == "claude")
     cmd: list[str] = [cli, "-p", prompt]
     if use_json:
         cmd += ["--output-format", "json"]
-    if allowed_tools and cli == "claude":
+    if allowed_tools and Path(cli).name == "claude":
         cmd += ["--allowed-tools", ",".join(allowed_tools)]
 
     meta: dict[str, Any] = {
@@ -427,7 +427,7 @@ def ask_llm(
     """
     cli = _which_llm_cli()
     if cli:
-        if allowed_tools and cli == "claude":
+        if allowed_tools and Path(cli).name == "claude":
             tag = f"cli:{cli}+agentic"
         elif disable_brain:
             tag = f"cli:{cli}+tools:no-brain"

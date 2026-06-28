@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.21] - 2026-06-28
+
+### Added
+- **Regression tests for the silent-failure class that bit us 0.5.16 → 0.5.20** (`tests/test_daemon_env_silent_failures.py`). 13 tests that simulate the launchd-daemon environment our existing suite never exercised: restricted PATH, `sys.argv[0]` pointing at the server launcher, `shutil.which` returning None, full-path CLI resolution. Each maps directly to a bug we shipped today.
+
+### Fixed
+- **`cli == "claude"` equality check broke `--allowed-tools` when `_which_llm_cli` returned a full path** (e.g. `/opt/homebrew/bin/claude` from the known-paths probe added in 0.5.19). Replaced with `Path(cli).name == "claude"`. Caught by the new regression tests — in production the supersede still worked because claude defaults to having tools when the flag is absent, but the agentic flag was never actually being passed by daemon-spawned workers. Anyone restricting tools to specific names (security, cost) was getting the unrestricted default.
+
 ## [0.5.20] - 2026-06-28
 
 ### Changed
