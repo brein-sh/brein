@@ -84,12 +84,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     ev = sub.add_parser("eval", help="Continuous A/B eval (LLM-gated)")
     ev.add_argument(
-        "eval_action", choices=["tick", "observe", "capture-prompt"],
+        "eval_action", choices=["tick", "observe", "capture-prompt", "check-synthesis"],
         help=("tick: read job JSON from stdin, gate, conditionally run A/B. "
               "observe: PostToolUse hook — fires eval when Grep/Read targets "
               "$BRAIN_REPO. "
               "capture-prompt: UserPromptSubmit hook — extracts `.prompt` "
-              "from the Claude Code envelope and writes it to --out."),
+              "from the Claude Code envelope and writes it to --out. "
+              "check-synthesis: Stop hook — scans last assistant turn for "
+              "proper-noun entities the brain doesn't cover; emits a "
+              "block-reason JSON on stdout if there's a gap and no "
+              "brain_update happened this turn."),
     )
     ev.add_argument("--prompt-file", default="",
                     help="Path to the saved user prompt (for `observe`)")
@@ -239,6 +243,14 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         except Exception:
             pass
         return 0
+
+    if args.eval_action == "check-synthesis":
+        from . import _synth_check
+        try:
+            return _synth_check.run()
+        except Exception:
+            # Never block Claude Code on a hook bug.
+            return 0
 
     return 2
 

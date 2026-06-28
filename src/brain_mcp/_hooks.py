@@ -57,6 +57,15 @@ def entries() -> dict[str, list[dict]]:
         "echo '[REMINDER] No brain writes this session. brain_update durable learnings.' >&2; "
         "exit 0"
     )
+    # Smarter Stop check: scan the last assistant turn for proper-noun
+    # entities the brain doesn't yet cover. If there's a gap AND no
+    # brain_update happened this turn, emit a Claude Code block-reason on
+    # stdout so the model resumes and writes before stopping. Honors
+    # stop_hook_active so it can't infinite-loop.
+    synth_check = (
+        f'{_DISABLE_CHECK}'
+        'brein eval check-synthesis 2>/dev/null || true; exit 0'
+    )
     # Capture every user prompt to a per-session file so PostToolUse hooks
     # can use it as the "question" when grep/read targets the brain repo.
     # Claude Code passes a JSON envelope on stdin — `brein eval capture-prompt`
@@ -82,7 +91,10 @@ def entries() -> dict[str, list[dict]]:
             _entry("Read|Grep|Glob", observe_tool),
         ],
         "UserPromptSubmit": [_entry("", capture_prompt)],
-        "Stop": [_entry("", write_reminder)],
+        "Stop": [
+            _entry("", write_reminder),
+            _entry("", synth_check),
+        ],
     }
 
 

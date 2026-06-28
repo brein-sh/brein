@@ -4,6 +4,12 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.31] - 2026-06-28
+
+### Added
+- **Stop hook: `brein eval check-synthesis`.** Scans the last assistant turn for proper-noun-ish entities (ALL-CAPS acronyms, dotted/dashed identifiers, CamelCase, Capitalized 4+ char words), greps `$BRAIN_REPO/docs` for them, and — if any are missing AND no `brain_update` happened this turn — emits a Claude Code `{"decision":"block","reason":...}` so the model resumes and writes before stopping. Honors `stop_hook_active` to avoid loops; silent on trivial turns (<400 chars), missing brain, or full coverage. Fixes the "Claude synthesizes everything about the user's company from memory and writes nothing to the empty brain" failure mode that motivated this hook.
+- **Policy template: new `### After Synthesizing Domain Facts` trigger.** Spells out that facts already in CLAUDE.md / auto-memory do NOT count as "the brain already has it" — the brain is a separate store, and the synthesis the agent just produced for the user IS the durable artifact. Heuristic-friendly: covers the common "what is X?" / "tell me about Y" / "all of it" prompt patterns.
+
 ## [0.5.30] - 2026-06-28
 
 ### Added

@@ -88,6 +88,19 @@ When a non-obvious bug is solved, write the root cause and fix to `docs/knowledg
 ### After Architecture or Design Decisions
 Capture confirmed approaches and rejected alternatives in `docs/decisions/`.
 
+### After Synthesizing Domain Facts
+If you produce a substantive answer (≥3 sentences or a bulleted brief) about the user's
+companies, projects, people, contracts, repos, or products, AND a quick `grep` of
+`{repo_path}/docs` shows the brain does not already cover the entity, write the
+synthesis via `brain_update` BEFORE ending the turn.
+
+Having the facts in your context (CLAUDE.md, auto-memory, an earlier tool result) does
+NOT count as "the brain already has it" — the brain is a separate store. The synthesis
+you just produced for the user IS the durable artifact; do not throw it away.
+
+Heuristic: if the user asked "what is X?" / "tell me about Y" / "all of it" and you
+answered with names, paths, contracts, or relationships, write that.
+
 ## Rules
 
 - Do NOT ask "should I write this to the brain?" — just do it when it's clearly useful.
