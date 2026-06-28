@@ -74,7 +74,17 @@ mcp = FastMCP(
 )
 
 
+def _has_origin() -> bool:
+    """True iff the brain repo has an `origin` remote configured. Local-only
+    brains (e.g. `brein init` with no GitHub repo) keep working — pull/push
+    are simply skipped."""
+    r = _run_git(["remote"])
+    return r.returncode == 0 and "origin" in (r.stdout or "").split()
+
+
 def _pull_ff() -> None:
+    if not _has_origin():
+        return
     _run_git(["pull", "--ff-only", "origin", "main"], check=True)
 
 
@@ -112,18 +122,35 @@ def _restore_paths(paths: list[str], created: list[str]) -> None:
 _push_lock = threading.Lock()
 
 
-def _bg_push() -> None:
+def _bg_push(retries: int = 3) -> None:
+    """Push to origin in the background. Retries with `pull --rebase` on
+    non-fast-forward (someone else pushed in between). No-op when there's
+    no origin remote — local-only brains keep working."""
+    if not _has_origin():
+        return
     with _push_lock:
-        r = _run_git(["push", "origin", "main"])
-        if r.returncode != 0:
-            print(
-                f"[brain-mcp] async push failed: {(r.stderr or r.stdout).strip()[:200]}",
-                file=sys.stderr,
-                flush=True,
-            )
+        last_err = ""
+        for attempt in range(retries):
+            r = _run_git(["push", "origin", "main"])
+            if r.returncode == 0:
+                return
+            last_err = (r.stderr or r.stdout).strip()[:200]
+            # Likely non-ff because another writer's bg push got there first.
+            # Rebase onto origin and retry.
+            _run_git(["pull", "--rebase", "origin", "main"])
+        print(
+            f"[brain-mcp] async push failed after {retries} attempts: {last_err}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
+    """Local commit is synchronous (fast — no network); push is fire-and-forget
+    in a daemon thread (slow — network). Two writers serialize through the
+    inter-process write lock for the commit, and through `_push_lock` for the
+    background push, so local history stays linear and remote pushes don't
+    race each other."""
     _run_git(["add", *paths], check=True)
     diff_cached = _run_git(["diff", "--cached", "--quiet"])
     if diff_cached.returncode == 0:
@@ -131,22 +158,28 @@ def _commit_push(paths: list[str], commit_message: str) -> dict[str, Any]:
     _run_git(["commit", "-m", commit_message], check=True)
     status = _run_git(["status", "--short"], check=True).stdout.strip()
     head = _run_git(["rev-parse", "--short", "HEAD"], check=True).stdout.strip()
-    # Push synchronously while the caller still holds the inter-process write
-    # lock — otherwise two writers could both win their local commit and then
-    # race the remote non-ff. Per-process _push_lock still gates the rare
-    # telemetry/async pushes that happen outside brain_update.
-    with _push_lock:
-        push = _run_git(["push", "origin", "main"])
-    if push.returncode != 0:
+
+    if not _has_origin():
         return {
             "changed": True,
-            "pushed": "failed",
-            "push_error": (push.stderr or push.stdout).strip()[:400],
+            "pushed": "skipped_no_remote",
             "clean": status == "",
             "dirty_status": status,
             "head": head,
         }
-    return {"changed": True, "pushed": "ok", "clean": status == "", "dirty_status": status, "head": head}
+
+    # Fire-and-forget push — the agent returns the moment local commit lands.
+    # _push_lock serializes concurrent bg pushes; _bg_push handles non-ff
+    # with pull --rebase + retry. Push failures land in stderr and the next
+    # _pull_ff at the top of the following brain_update will resync.
+    threading.Thread(target=_bg_push, name="brain-bg-push", daemon=True).start()
+    return {
+        "changed": True,
+        "pushed": "queued",
+        "clean": status == "",
+        "dirty_status": status,
+        "head": head,
+    }
 
 
 def _index_status_payload() -> str | None:

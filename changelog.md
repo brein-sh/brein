@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.32] - 2026-06-28
+
+### Changed
+- **`brain_update` pushes in the background.** Local commit stays synchronous (so the agent gets fast confirmation + serializability + validation feedback) but `git push` now fires in a daemon thread. Response carries `"pushed": "queued"` and the agent returns in ~80ms instead of waiting seconds for the network round-trip. Concurrent writers still serialize through the inter-process write lock for the commit and `_push_lock` for the background push; non-fast-forward conflicts auto-retry with `pull --rebase`. Closes the "Claude wandered for 2m saving one doc" gap.
+
+### Fixed
+- **Local-only brains no longer 500 on every write.** `brein init`'s "Create new empty repo" option produces a repo with no `origin` remote; `_pull_ff` / `_commit_push` used to die there and roll back the whole update. Now both detect a missing `origin` and skip the network steps gracefully (response: `"pushed": "skipped_no_remote"`). Useful for testing brein end-to-end without a hosted git remote.
+
 ## [0.5.31] - 2026-06-28
 
 ### Added
