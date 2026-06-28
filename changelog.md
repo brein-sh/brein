@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.19] - 2026-06-28
+
+### Fixed
+- **`_which_llm_cli` now probes known install paths when `shutil.which` fails.** Same root cause as 0.5.18 (launchd's minimal PATH), one layer deeper: even after 0.5.18 fixed the worker spawn, the worker itself called `shutil.which("claude")` to pick the judge CLI — and that also returned None inside the daemon's env, so consistency findings landed as `judge: "stub"` / `escalation_reason: "judge_unavailable"` instead of running the agentic resolver. Now `_which_llm_cli` falls back to `/opt/homebrew/bin/`, `/usr/local/bin/`, `~/.local/bin/`, `~/.claude/local/` for `claude`/`codex`/`gemini` after PATH lookup misses. Found by triggering brain_update against the v0.5.18 daemon: spawn worked (real PID), worker ran end-to-end, but emitted a stub finding instead of an agent run.
+
 ## [0.5.18] - 2026-06-28
 
 ### Fixed

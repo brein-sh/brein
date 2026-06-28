@@ -248,12 +248,34 @@ def _llm_cli_preference() -> list[str]:
     return (os.environ.get("BRAIN_EVAL_CLIENT") or _DEFAULT_CLI_PREFERENCE).split(",")
 
 
+# Probed after shutil.which() fails — launchd's minimal PATH
+# (/usr/bin:/bin:/usr/sbin:/sbin) excludes the locations Claude / Codex /
+# Gemini install themselves into, so daemon-spawned workers go judge-blind
+# unless we look here too.
+_KNOWN_CLI_PATHS: dict[str, list[str]] = {
+    "claude":  ["/opt/homebrew/bin/claude", "/usr/local/bin/claude",
+                "~/.local/bin/claude", "~/.claude/local/claude"],
+    "codex":   ["/opt/homebrew/bin/codex", "/usr/local/bin/codex",
+                "~/.local/bin/codex"],
+    "gemini":  ["/opt/homebrew/bin/gemini", "/usr/local/bin/gemini",
+                "~/.local/bin/gemini"],
+}
+
+
 def _which_llm_cli() -> str | None:
-    """First available CLI in preference order, or None."""
+    """First available CLI in preference order. Falls back to probing
+    known install paths if PATH lookup fails (daemon-mode rescue)."""
     for name in _llm_cli_preference():
         name = name.strip()
-        if name and shutil.which(name):
-            return name
+        if not name:
+            continue
+        found = shutil.which(name)
+        if found:
+            return found
+        for cand in _KNOWN_CLI_PATHS.get(name, []):
+            full = Path(os.path.expanduser(cand))
+            if full.is_file() and os.access(full, os.X_OK):
+                return str(full)
     return None
 
 
