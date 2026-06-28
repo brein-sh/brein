@@ -346,7 +346,14 @@ def spawn_detached(write_path: str) -> int:
 
 
 def _brein_executable() -> str:
+    # Prefer `brein` on PATH (the CLI). sys.argv[0] is wrong when we're
+    # spawned from the daemon — it points at `brain-mcp` (the server
+    # launcher), which ignores `consistency check <path>` args and tries
+    # to start an HTTP server on the already-bound port.
+    on_path = shutil.which("brein")
+    if on_path:
+        return on_path
     cand = sys.argv[0] if sys.argv and sys.argv[0] else None
-    if cand and Path(cand).is_file() and os.access(cand, os.X_OK):
+    if cand and Path(cand).name == "brein" and Path(cand).is_file():
         return cand
-    return shutil.which("brein") or "brein"
+    return "brein"

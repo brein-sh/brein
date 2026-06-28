@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.17] - 2026-06-28
+
+### Fixed
+- **Consistency worker spawned the wrong binary when launched from the daemon.** `_brein_executable()` preferred `sys.argv[0]` (path-exists check) over `shutil.which("brein")`. When the daemon forks the consistency worker, `sys.argv[0]` is `/usr/local/bin/brain-mcp` (the MCP **server** launcher), not `brein` (the CLI). The launcher ignored `consistency check <path>` as args and tried to start a second MCP HTTP server, failed to bind to the already-occupied 8765, and exited as `<defunct>`. No consistency check ever ran in daemon mode. Now we prefer `which("brein")` first and only fall back to `sys.argv[0]` if its basename actually is `brein`. Caught by manually triggering a brain_update against the v0.5.16 daemon and finding the spawned PID was a zombie that had logged "address already in use" instead of an agent run.
+
 ## [0.5.16] - 2026-06-28
 
 ### Changed
