@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.15] - 2026-06-28
+
+### Fixed
+- **Concurrent-fire dedup race in the eval worker.** The 24h `_seen_recently` check was read-then-decide with the LLM gate (~3-5s) sitting between the read and the `_mark_seen` write. Two workers spawned within that window both saw "not seen" → both passed the gate → both ran the full A/B → wasted ~$2 + 2.5 min per duplicate. Now we use an O_EXCL claim slot (`~/.brein/eval-claims/<hash>.claim`) before the gate runs. The second worker bails atomically. Stale claims (>10 min, configurable via `BRAIN_EVAL_CLAIM_STALE_SECONDS`) are swept so a crashed worker doesn't block forever.
+
 ## [0.5.14] - 2026-06-27
 
 ### Fixed

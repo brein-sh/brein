@@ -129,6 +129,59 @@ def _mark_seen(query_hash: str, decision: str) -> None:
         pass
 
 
+# ── Concurrent-fire dedup (O_EXCL claim slot) ──────────────────────────
+
+# The 24h _seen_recently check is read-then-decide, with the LLM gate
+# (~3-5s) sitting between read and write. Two workers spawned inside that
+# window both see "not seen", both pass the gate, both run the full A/B.
+# A claim slot — atomic O_EXCL create — closes the race: only the first
+# worker to create the slot proceeds, the rest bail silently.
+EVAL_CLAIMS_DIR = Path(os.path.expanduser("~")) / ".brein" / "eval-claims"
+# Worker may crash before releasing. Treat older slot files as stale so
+# the next eval for the same hash can claim again.
+EVAL_CLAIM_STALE_SECONDS = float(os.environ.get("BRAIN_EVAL_CLAIM_STALE_SECONDS", "600"))
+
+
+def _claim_path(query_hash: str) -> Path:
+    # `:` is fine on macOS/linux but unusual; replace for portability.
+    safe = query_hash.replace(":", "_").replace("/", "_")
+    return EVAL_CLAIMS_DIR / f"{safe}.claim"
+
+
+def _try_claim(query_hash: str) -> bool:
+    """Return True if this worker should proceed, False if another worker
+    has already claimed this query_hash. Uses O_EXCL for atomicity."""
+    EVAL_CLAIMS_DIR.mkdir(parents=True, exist_ok=True)
+    slot = _claim_path(query_hash)
+    # Sweep a stale slot if present so a crashed worker doesn't block forever.
+    try:
+        age = time.time() - slot.stat().st_mtime
+        if age > EVAL_CLAIM_STALE_SECONDS:
+            slot.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    try:
+        fd = os.open(str(slot), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    try:
+        os.write(fd, f"{os.getpid()} {time.time()}\n".encode())
+    finally:
+        os.close(fd)
+    return True
+
+
+def _release_claim(query_hash: str) -> None:
+    try:
+        _claim_path(query_hash).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _log_gate_skip(question: str, query_hash: str, trigger: str, gate_meta: dict) -> None:
     """Write a skipped-row to eval-log.jsonl so we can see the gate worked
     without spending the full A/B budget."""
@@ -482,19 +535,27 @@ def _tick(question: str, evidence_block: str, query_hash: str, trigger: str) -> 
             return
         if not _which_cli() and not _OR_KEY:
             return
-        decided, gate_meta = _llm_gate(question, evidence_block)
-        if not decided:
-            _mark_seen(query_hash, "gate_skipped")
-            _log_gate_skip(question, query_hash, trigger, gate_meta)
-            _commit_and_push_eval_row(
-                f"eval(gate_skipped): {question[:60].splitlines()[0]}"
-            )
+        # Atomic claim — second concurrent worker for the same hash bails
+        # here, even if it slipped past _seen_recently (the gate window
+        # gave it a chance to race).
+        if not _try_claim(query_hash):
             return
-        _mark_seen(query_hash, "ab_run")
-        _run_ab(question, evidence_block, trigger, query_hash)
-        _commit_and_push_eval_row(
-            f"eval(ab): {question[:60].splitlines()[0]}"
-        )
+        try:
+            decided, gate_meta = _llm_gate(question, evidence_block)
+            if not decided:
+                _mark_seen(query_hash, "gate_skipped")
+                _log_gate_skip(question, query_hash, trigger, gate_meta)
+                _commit_and_push_eval_row(
+                    f"eval(gate_skipped): {question[:60].splitlines()[0]}"
+                )
+                return
+            _mark_seen(query_hash, "ab_run")
+            _run_ab(question, evidence_block, trigger, query_hash)
+            _commit_and_push_eval_row(
+                f"eval(ab): {question[:60].splitlines()[0]}"
+            )
+        finally:
+            _release_claim(query_hash)
     except Exception:
         # Telemetry must never break the host.
         pass
