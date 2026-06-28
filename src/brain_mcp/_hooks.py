@@ -17,7 +17,14 @@ from pathlib import Path
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 DISABLE_FLAG = Path.home() / ".brein" / "disabled"
 
-_DISABLE_CHECK = '[ "${BREIN_GATE:-on}" = "off" ] && exit 0; [ -f "$HOME/.brein/disabled" ] && exit 0; '
+_DISABLE_CHECK = (
+    '[ "${BREIN_GATE:-on}" = "off" ] && exit 0; '
+    '[ -f "$HOME/.brein/disabled" ] && exit 0; '
+    # Side-agents spawned by the Stop hook bypass every brein hook so they
+    # don't trip the orient gate, fire a redundant write-reminder, or
+    # recurse on their own Stop. Set by _synth_check._spawn_side_agent.
+    '[ "${BREIN_SYNTH_SPAWNED:-0}" = "1" ] && exit 0; '
+)
 _ORIENT_FLAG = '/tmp/claude-brein-oriented-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_FLAG = '/tmp/claude-brein-write-${CLAUDE_CODE_SESSION_ID:-default}'
 _WRITE_REMINDED = '/tmp/claude-brein-write-reminded-${CLAUDE_CODE_SESSION_ID:-default}'

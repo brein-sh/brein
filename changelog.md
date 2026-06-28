@@ -4,6 +4,12 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.35] - 2026-06-28
+
+### Changed
+- **Stop hook spawns a detached side-agent instead of blocking the user.** v0.5.34 blocked the user-visible Stop and forced the model to keep working inline ("Brewing… 1m 15s"), which slows everyone down. New behavior: when the Stop hook detects "no brain_update this turn + non-trivial answer", it spawns a detached `claude -p` side-agent with the last assistant text + a tight prompt ("brain_update durable knowledge or exit"), then exits 0 immediately. User gets control back instantly; the write happens in the background.
+- **`BREIN_SYNTH_SPAWNED=1` bypasses every brein hook.** The side-agent inherits the parent's env and would otherwise trip the orient gate (blocked on tool use), fire its own write-reminder, and recurse on its own Stop. All brein hooks now short-circuit when this env is set. Side-agent stdout/stderr lands in `~/.brein/synth-side-agent.log` for debugging.
+
 ## [0.5.34] - 2026-06-28
 
 ### Changed
