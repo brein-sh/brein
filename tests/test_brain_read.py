@@ -65,3 +65,20 @@ def test_brain_read_logs_telemetry(brain_env):
     last = read_rows[-1]
     assert "docs/teleread.md" in last.get("hits", [])
     assert "docs/teleread.md" in last.get("used_docs", [])
+
+
+def test_brain_read_max_chars_arg_caps_body(brain_env):
+    """Caller can shrink the body with max_chars; total_chars reports the full size."""
+    body = _seed_long_doc(brain_env, "docs/cap.md", body_len=4000)
+    out = run(brain_env, "brain_read", {"file_path": "docs/cap.md", "max_chars": 500})
+    assert len(out["content"]) == 500
+    assert out["truncated"] is True
+    assert out["total_chars"] == len(body)
+
+
+def test_brain_read_max_chars_zero_means_uncapped(brain_env):
+    """max_chars=0 disables the cap, even when body exceeds the default."""
+    body = _seed_long_doc(brain_env, "docs/big.md", body_len=4000)
+    out = run(brain_env, "brain_read", {"file_path": "docs/big.md", "max_chars": 0})
+    assert out["content"] == body
+    assert out["truncated"] is False

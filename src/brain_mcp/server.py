@@ -351,13 +351,13 @@ def _progress_str(state) -> str | None:
 # telemetry-logged way to pull a full doc body in one call.
 @mcp.tool(name="brain_read")
 @logged("brain_read")
-def brain_read(file_path: str) -> str:
+def brain_read(file_path: str, max_chars: int | None = None) -> str:
     """Return the full body of a brain doc by repo-relative path.
 
-    No truncation under MAX_READ_CHARS (80k default). Path is validated via
-    `_safe_path` (rejects .git, absolute paths, repo escape). Logs a 'read'
-    telemetry row so retrieval analytics see direct doc loads alongside
-    search/evidence.
+    max_chars: cap on returned body length. Default `MAX_READ_CHARS` (env-
+    configurable, ships at 50k — covers the long-tail of curated docs).
+    Pass `0` (or any value <=0) for no cap. Pass a smaller number when you
+    only want a head.
     """
     _ensure_repo()
     full = _safe_path(file_path)
@@ -366,11 +366,14 @@ def brain_read(file_path: str) -> str:
     content = full.read_text(encoding="utf-8")
     rel = str(full.relative_to(REPO_PATH))
     _append_retrieval_log(f"read:{rel}", [rel], [rel], "read", kind="read")
+    cap = MAX_READ_CHARS if max_chars is None else max_chars
+    body = content if cap <= 0 else content[:cap]
     return _json({
         "path": rel,
         "frontmatter": _frontmatter(content),
-        "content": content[:MAX_READ_CHARS],
-        "truncated": len(content) > MAX_READ_CHARS,
+        "content": body,
+        "truncated": cap > 0 and len(content) > cap,
+        "total_chars": len(content),
     })
 
 

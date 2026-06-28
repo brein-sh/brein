@@ -9,7 +9,7 @@ from pathlib import Path
 _HOME = Path.home()
 REPO_PATH = Path(os.environ.get("BRAIN_REPO", str(_HOME / ".brein" / "brain"))).resolve()
 DOCS_PATH = REPO_PATH / "docs"
-MAX_READ_CHARS = int(os.environ.get("BRAIN_MAX_READ_CHARS", "80000"))
+MAX_READ_CHARS = int(os.environ.get("BRAIN_MAX_READ_CHARS", "50000"))
 LOG_PATH = Path(os.environ.get("BRAIN_RETRIEVAL_LOG", str(REPO_PATH / "telemetry" / "retrieval-log.jsonl")))
 VECTOR_INDEX_PATH = Path(os.environ.get("BRAIN_VECTOR_INDEX", str(_HOME / ".brein" / "vector-index.json")))
 EMBEDDING_MODEL_NAME = os.environ.get("BRAIN_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")

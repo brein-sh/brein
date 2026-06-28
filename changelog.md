@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.23] - 2026-06-28
+
+### Changed
+- **`brain_read` takes an optional `max_chars` arg; default lowered to 50k.** Yesterday's 0.5.22 shipped `brain_read` with a hardcoded 80k ceiling and no caller override — same paternalism class as the just-dropped `SIMILAR_THRESHOLD = 0.80`, two functions over. Now `max_chars: int | None = None` (None → use the env-configurable `BRAIN_MAX_READ_CHARS` default, now 50k), pass `0` for uncapped, pass a smaller number for a head. Response also includes `total_chars` so the caller can decide whether to re-call uncapped. Cap exists as a context-budget default, not a policy — agents that know their context can grow it.
+
 ## [0.5.22] - 2026-06-28
 
 ### Added
