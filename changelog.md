@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.33] - 2026-06-28
+
+### Fixed
+- **`brein eval check-synthesis` parser handled real Claude Code transcripts.** v0.5.31's transcript walker broke at the first `user` row going backward and returned the empty string, so the hook silently passed every Stop in practice. Claude Code transcripts intersperse `attachment`, `mode`, `permission-mode`, `ai-title`, `last-prompt`, `file-history-snapshot`, `hook_success` etc. between role rows AND can have trailing `user` rows after the last assistant turn (queued follow-ups, metadata) — the walker now skips metadata and tolerates trailing user rows, only breaking on the `user` that precedes the collected assistant run. Verified against a 2569-char trailing assistant turn in a real transcript.
+
+### Changed
+- **Tighter noise filter in `_synth_check`.** Adds common protocol/format acronyms (HTTP, API, URL, JSON, REST, gRPC, etc.), framework nouns (Node, Python, TypeScript, Docker, GitHub, Bearer, Express), and a few stragglers (CLI, SDK, MCP) to `_NOISE_TOKENS` so the block-reason names real domain entities (Kalshi, Limitless, Polymarket, PMXT) instead of being diluted by generic vocabulary.
+
 ## [0.5.32] - 2026-06-28
 
 ### Changed

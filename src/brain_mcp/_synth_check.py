@@ -24,19 +24,36 @@ _MAX_GAPS_REPORTED = 8
 
 # Tokens that look proper-noun-ish but are too common to be a real entity.
 _NOISE_TOKENS = {
+    # Common English Capitalized words
     "The", "This", "That", "With", "From", "Your", "Have", "Need", "Want",
     "Like", "Each", "Every", "Most", "Some", "Will", "Should", "Could",
     "Would", "After", "Before", "While", "About", "Brain", "Memory",
-    "CLAUDE", "README", "Here", "There", "Just", "Only", "Both",
-    "Also", "Then", "Even", "Make", "Made", "Said", "Says", "Goes",
-    "Such", "More", "Less", "When", "Where", "Which", "Whom", "What",
-    "Note", "True", "False", "None", "Null", "TODO", "FIXME",
+    "Here", "There", "Just", "Only", "Both", "Also", "Then", "Even",
+    "Make", "Made", "Said", "Says", "Goes", "Such", "More", "Less",
+    "When", "Where", "Which", "Whom", "What", "Note", "True", "False",
+    "None", "Null", "TODO", "FIXME", "Also", "Same",
+    # Generic protocol / format / spec acronyms — not entities.
+    "API", "APIs", "HTTP", "HTTPS", "URL", "URLs", "URI", "JSON", "YAML",
+    "XML", "CSV", "TSV", "SQL", "REST", "RPC", "gRPC", "GraphQL",
+    "OpenAPI", "OAuth", "JWT", "CORS", "TLS", "SSL", "SSH", "DNS",
+    "TCP", "UDP", "IP", "UTF", "ASCII", "UUID", "GUID", "MIME",
+    # Common framework / tool nouns — usually mentioned in passing.
+    "CLAUDE", "README", "MCP", "CLI", "GUI", "SDK", "SDKs",
+    "Bearer", "Express", "Node", "Python", "TypeScript", "JavaScript",
+    "Rust", "Bash", "Docker", "GitHub", "GitLab", "Git",
+    # ANSI / box-drawing artifacts that occasionally tokenize weirdly.
+    "ANSI",
 }
 
 
 def _last_assistant_text(transcript_path: str) -> str:
-    """Concatenate text blocks from the trailing run of assistant messages
-    (the answer to the most recent user turn)."""
+    """Concatenate text blocks from the most recent contiguous run of
+    assistant messages. Claude Code transcripts intersperse a lot of
+    metadata (mode, permission-mode, ai-title, last-prompt, attachment,
+    file-history-snapshot, hook_*…) between role-bearing rows — those are
+    all ignored. Trailing `user` rows are also tolerated: we keep walking
+    past them until we find the assistant run, then stop when we hit the
+    `user` that *preceded* that run."""
     try:
         lines = Path(transcript_path).read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
@@ -47,17 +64,20 @@ def _last_assistant_text(transcript_path: str) -> str:
             msgs.append(json.loads(line))
         except (json.JSONDecodeError, ValueError):
             continue
+
     chunks: list[str] = []
     for m in reversed(msgs):
-        # Claude Code transcripts use {"type":"assistant","message":{"role":...,"content":[...]}}
-        role = (
-            m.get("type")
-            or m.get("role")
-            or (m.get("message") or {}).get("role")
-        )
-        if role == "user":
-            break
-        if role != "assistant":
+        # In Claude Code transcripts, the top-level `type` is "assistant" /
+        # "user" / etc., and the message itself sits under "message". Other
+        # types ("attachment", "system", "mode", "ai-title", …) are metadata.
+        msg_type = m.get("type")
+        role = (m.get("message") or {}).get("role") if isinstance(m.get("message"), dict) else None
+        kind = role or msg_type
+        if kind == "user":
+            if chunks:
+                break  # we already have the trailing assistant run
+            continue   # trailing user/metadata — keep going to find assistant
+        if kind != "assistant":
             continue
         content = (m.get("message") or {}).get("content") or m.get("content") or ""
         if isinstance(content, list):
