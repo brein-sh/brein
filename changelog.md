@@ -4,6 +4,12 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.34] - 2026-06-28
+
+### Changed
+- **`check-synthesis` is now a one-line prompt, not an analyzer.** Dropped the proper-noun tokenizer, noise filter, and per-doc gap analysis from `_synth_check`. The hook used to enumerate "suspect" tokens for the model to argue with ("just code identifiers, stop again") — which it did, every time. New behavior: any non-trivial assistant turn (≥100 chars) with no `brain_update` triggers a single, simple block-reason: *"Did you learn anything this turn that isn't in the brain yet? If yes — names, decisions, code paths, anything durable — call brain_update now. If it's truly already covered or trivial, just stop again."* The model decides. No clever heuristics for it to escape through. Still honors `stop_hook_active` so a determined no-op turn can still stop.
+- **Policy template: `### Write Often`.** Replaces the prior "After Synthesizing Domain Facts" paragraph with a shorter, harder rule: default to writing, don't ask, don't defer for perfection, a short honest entry beats a perfect entry never.
+
 ## [0.5.33] - 2026-06-28
 
 ### Fixed
