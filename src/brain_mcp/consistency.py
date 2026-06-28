@@ -328,14 +328,18 @@ def run_check(write_path: str) -> Finding | None:
 # --- detached spawn -----------------------------------------------------------
 
 def spawn_detached(write_path: str) -> int:
-    """Launch `brein consistency check <path>` as a detached background
-    process. Returns the pid. Does not wait."""
-    brein = _brein_executable()
+    """Launch the consistency check as a detached subprocess. Returns the pid.
+
+    Uses `python -m brain_mcp.cli consistency check <path>` via the running
+    interpreter — PATH-independent so launchd's minimal env doesn't break us.
+    Same pattern as eval._spawn_eval_worker.
+    """
     log_path = QUEUE_PATH.with_name("consistency-worker.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_path, "ab", buffering=0)
+    cmd = [sys.executable, "-m", "brain_mcp.cli", "consistency", "check", write_path]
     proc = subprocess.Popen(
-        [brein, "consistency", "check", write_path],
+        cmd,
         stdin=subprocess.DEVNULL,
         stdout=log_fh,
         stderr=subprocess.STDOUT,
@@ -343,17 +347,3 @@ def spawn_detached(write_path: str) -> int:
         close_fds=True,
     )
     return proc.pid
-
-
-def _brein_executable() -> str:
-    # Prefer `brein` on PATH (the CLI). sys.argv[0] is wrong when we're
-    # spawned from the daemon — it points at `brain-mcp` (the server
-    # launcher), which ignores `consistency check <path>` args and tries
-    # to start an HTTP server on the already-bound port.
-    on_path = shutil.which("brein")
-    if on_path:
-        return on_path
-    cand = sys.argv[0] if sys.argv and sys.argv[0] else None
-    if cand and Path(cand).name == "brein" and Path(cand).is_file():
-        return cand
-    return "brein"

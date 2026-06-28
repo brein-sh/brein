@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.18] - 2026-06-28
+
+### Fixed
+- **Consistency worker silently failed under launchd because `brein` wasn't on the daemon's PATH.** launchctl gives processes a minimal default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that does NOT include `~/.local/bin` where the `brein` CLI lives. After 0.5.17 fixed `_brein_executable` to prefer `shutil.which("brein")`, that call now returned None inside the daemon, fell through to the literal string `"brein"`, and `subprocess.Popen` raised `FileNotFoundError` — caught by `server.py`'s try/except, surfacing as `consistency_check_pid: null`. Now we invoke `python -m brain_mcp.cli consistency check <path>` via `sys.executable`, exactly like `eval._spawn_eval_worker` does. PATH-independent, no plist changes needed. Found by running `brain_update` against the v0.5.17 daemon and getting `consistency_check_pid: null` with nothing in the worker log.
+
 ## [0.5.17] - 2026-06-28
 
 ### Fixed
