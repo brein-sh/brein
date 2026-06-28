@@ -249,6 +249,84 @@ def _commit_all_edits(summary: str) -> dict[str, Any] | None:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+# ── recheck pass: re-run A/B on the same losses, post-improvement ──────
+
+def _build_evidence_block(question: str) -> str:
+    """Build a fresh brain_evidence-style snippet bundle for the question.
+    Skips the MCP layer; calls the vector index + Reads directly so we
+    don't depend on a running MCP server."""
+    try:
+        from . import server as _server
+        return _server.brain_evidence(question)
+    except Exception:
+        return ""
+
+
+def _recheck_one(loss: dict[str, Any], evolve_id: str, cycle_id: str) -> dict[str, Any]:
+    """Re-run A/B on one loss question. Tags the new eval row with
+    trigger=f'evolve_recheck:{evolve_id}' so the brein.sh UI can group
+    rows by evolution and show before/after."""
+    from . import eval as _eval
+    question = loss.get("question", "") or ""
+    if not question:
+        return {"question": "", "fired": False, "reason": "empty_question"}
+    qhash = _eval._hash(question)
+    trigger = f"evolve_recheck:{evolve_id}"
+    evidence = _build_evidence_block(question)
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "evolve_id": evolve_id,
+        "event": "recheck_start", "question": question[:100], "trigger": trigger,
+    })
+    try:
+        _eval._run_ab(question, evidence, trigger, qhash)
+        fired = True
+        err = None
+    except Exception as exc:
+        fired = False
+        err = f"{type(exc).__name__}: {exc}"
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "evolve_id": evolve_id,
+        "event": "recheck_end", "question": question[:100], "trigger": trigger,
+        "fired": fired, "error": err,
+    })
+    return {"question": question[:160], "fired": fired, "error": err}
+
+
+def _run_rechecks(losses: list[dict[str, Any]], evolve_id: str, cycle_id: str) -> dict[str, Any]:
+    """Fan rechecks across the same thread pool the improvement loop uses.
+    Each recheck is one _run_ab call → one new row in eval-log.jsonl."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "evolve_id": evolve_id,
+        "event": "recheck_cycle_start", "total": len(losses),
+    })
+    max_workers = max(1, min(EVOLVE_PARALLELISM, len(losses)))
+    fired = errored = 0
+    detail: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = [pool.submit(_recheck_one, l, evolve_id, cycle_id) for l in losses]
+        for fut in as_completed(futs):
+            r = fut.result()
+            detail.append(r)
+            if r.get("fired"):
+                fired += 1
+            else:
+                errored += 1
+    summary = {
+        "evolve_id": evolve_id,
+        "fired": fired,
+        "errored": errored,
+        "total": len(losses),
+        "detail": detail,
+    }
+    _append_progress({
+        "ts": _now_iso(), "cycle_id": cycle_id, "evolve_id": evolve_id,
+        "event": "recheck_cycle_end", "fired": fired, "errored": errored,
+        "total": len(losses),
+    })
+    return summary
+
+
 # ── log writer / reader ────────────────────────────────────────────────
 
 def append_result(result: EvolveResult) -> None:
@@ -373,14 +451,28 @@ def run_evolve(limit: int = 50) -> EvolveResult:
     escalated = counters["escalated"]
     skipped = counters["skipped"]
 
-    commit_summary = f"{improved}/{len(losses)} losses patched"
-    commit_info = _commit_all_edits(commit_summary) if improved else None
+    evolve_id = uuid.uuid4().hex[:12]
+
+    # Always attempt the commit — _commit_all_edits is a no-op when the repo
+    # is clean. Earlier versions gated on `improved > 0` which silently lost
+    # work when a parent run was killed mid-cycle (edits applied via the
+    # Edit tool but never committed); the next cycle would correctly see
+    # "docs already cover this", report skipped, and again not commit.
+    commit_summary = f"{improved}/{len(losses)} losses patched (evolve_id={evolve_id})"
+    commit_info = _commit_all_edits(commit_summary)
     sha = commit_info.get("sha") if isinstance(commit_info, dict) else None
     if commit_info:
         detail.append({"kind": "commit", **commit_info})
 
+    # Recheck pass: re-run A/B on every loss question with trigger
+    # 'evolve_recheck:<evolve_id>' so the eval log can show before/after
+    # per evolution. Same parallelism cap as the improvement loop.
+    if losses:
+        recheck_summary = _run_rechecks(losses, evolve_id, cycle_id)
+        detail.append({"kind": "recheck", **recheck_summary})
+
     result = EvolveResult(
-        evolve_id=uuid.uuid4().hex[:12],
+        evolve_id=evolve_id,
         started_at=started,
         losses_examined=len(losses),
         losses_improved=improved,

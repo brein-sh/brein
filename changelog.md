@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.29] - 2026-06-28
+
+### Added
+- **`evolve_recheck` — auto-rerun A/B on every loss the cycle examined.** After improvements commit, each loss question fires a fresh `_run_ab` tagged `trigger: "evolve_recheck:<evolve_id>"` and a fresh `query_hash`. This closes the feedback loop: you can now actually measure whether an evolve cycle worked. Before today the only signal was "9 docs got patched"; now you also see "of those 9 questions, 7 now win the A/B (was 0/9)." Rechecks fan out across the same `BRAIN_EVOLVE_PARALLELISM=8` thread pool — ~$8 of API cost per 13-loss cycle, finishes in ~2 min. brein.sh UI can group eval rows by `evolve_id` to render before/after trajectories. Rechecks measure "did the specific edit close the gap" (warm-cache, intentional); the rolling 100-row eval still measures long-term real-world performance.
+
+### Fixed
+- **`_commit_all_edits` runs even when this cycle's `improved` counter is 0.** Discovered when v0.5.27 was killed mid-cycle: the agent's `Edit` tool calls had already mutated 9 brain docs on disk, but the parent died before the commit step. The next v0.5.28 cycle correctly observed "docs already contain the refs" and reported `skipped` for all 13 losses — but gated commit on `improved > 0` and so left the rescue work uncommitted. Fix: always attempt the commit (it's a no-op when the working tree is clean), so any orphaned edits from a killed prior run get rescued automatically on the next cycle.
+
 ## [0.5.28] - 2026-06-28
 
 ### Changed

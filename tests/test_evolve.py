@@ -154,6 +154,7 @@ def test_run_evolve_appends_result_row(monkeypatch, tmp_path):
         "escalation_reason": None,
     })
     monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (valid, "cli:fake", {}))
+    monkeypatch.setattr(evolve, "_run_rechecks", lambda *a, **kw: {"fired": 0, "errored": 0, "total": 0, "detail": []})
 
     # Stub commit + push (test should not touch git).
     @contextlib.contextmanager
@@ -210,6 +211,7 @@ def test_loss_end_row_includes_agent_summary(monkeypatch, tmp_path):
         "escalation_reason": None,
     })
     monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (skipped, "cli:fake", {}))
+    monkeypatch.setattr(evolve, "_run_rechecks", lambda *a, **kw: {"fired": 0, "errored": 0, "total": 0, "detail": []})
 
     evolve.run_evolve(limit=50)
 
@@ -246,6 +248,7 @@ def test_run_evolve_parallelizes_across_losses(monkeypatch, tmp_path):
         _t.sleep(0.3)
         return (skipped, "cli:fake", {})
     monkeypatch.setattr(shared, "ask_llm", slow_ask)
+    monkeypatch.setattr(evolve, "_run_rechecks", lambda *a, **kw: {"fired": 0, "errored": 0, "total": 0, "detail": []})
 
     t0 = _t.perf_counter()
     result = evolve.run_evolve(limit=50)
@@ -280,6 +283,7 @@ def test_run_evolve_writes_per_loss_progress(monkeypatch, tmp_path):
         "edits_applied": False, "summary": "x", "escalation_reason": None,
     })
     monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (skipped, "cli:fake", {}))
+    monkeypatch.setattr(evolve, "_run_rechecks", lambda *a, **kw: {"fired": 0, "errored": 0, "total": 0, "detail": []})
 
     evolve.run_evolve(limit=50)
 
@@ -322,35 +326,91 @@ def test_cmd_evolve_does_not_nameerror_on_json(monkeypatch, capsys):
     assert "evolve_id" in out  # confirms json.dumps actually ran
 
 
-def test_run_evolve_no_commit_when_zero_improved(monkeypatch, tmp_path):
-    """If the agent picks 'skipped' for every loss, no commit attempted."""
+def test_run_evolve_commits_dirty_repo_even_when_zero_improved(monkeypatch, tmp_path):
+    """v0.5.29 fix: a killed prior run leaves Edit-tool changes uncommitted.
+    The next run will correctly skip ('docs already cover'), but it MUST
+    still attempt the commit so the rescued edits land. Earlier evolve
+    gated commit on improved>0 and silently lost the prior cycle's work."""
     from brain_mcp import evolve, shared
+    import contextlib
 
     eval_log = tmp_path / "eval-log.jsonl"
     _write_eval_log(eval_log, [
-        {"verdict": "no_brain_better",
-         "question": "q", "brain_answer": "x", "no_brain_answer": "y",
-         "reason": "r"},
+        {"verdict": "no_brain_better", "question": "q",
+         "brain_answer": "x", "no_brain_answer": "y", "reason": "r"},
     ])
     monkeypatch.setattr(evolve, "EVAL_LOG_PATH", eval_log)
     monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve-log.jsonl")
+    monkeypatch.setattr(evolve, "EVOLVE_PROGRESS_PATH", tmp_path / "progress.jsonl")
 
     skipped = json.dumps({
-        "kind": "skipped",
-        "confidence": "low",
-        "canonical_path": None,
-        "verified_refs_added": [],
-        "edits_applied": False,
-        "summary": "no canonical doc",
-        "escalation_reason": None,
+        "kind": "skipped", "confidence": "low",
+        "canonical_path": None, "verified_refs_added": [],
+        "edits_applied": False, "summary": "x", "escalation_reason": None,
     })
     monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (skipped, "cli:fake", {}))
-    # If commit is attempted, fail loudly.
-    monkeypatch.setattr(
-        shared, "_run_git",
-        lambda *a, **kw: pytest.fail("no commit should be attempted"),
-    )
+    monkeypatch.setattr(evolve, "_run_rechecks", lambda *a, **kw: {"fired": 0, "errored": 0, "total": 0, "detail": []})
+    # Skip the recheck pass entirely for this test (we exercise it elsewhere).
+    monkeypatch.setattr(evolve, "_run_rechecks", lambda *a, **kw: {"fired": 0, "errored": 0, "total": 0, "detail": []})
+
+    @contextlib.contextmanager
+    def fake_lock():
+        yield
+    monkeypatch.setattr(shared, "_interprocess_write_lock", fake_lock)
+
+    class R:
+        def __init__(self, out="", rc=0):
+            self.stdout = out
+            self.returncode = rc
+    # Repo is dirty (from a hypothetical killed prior run), so the new
+    # cycle's commit path MUST fire and produce a SHA.
+    seq = iter([
+        R(" M docs/foo.md\n"),  # status: dirty
+        R(""),                  # add -A
+        R(""),                  # commit
+        R(""),                  # push
+        R("deadbeef\n"),        # rev-parse
+    ])
+    monkeypatch.setattr(shared, "_run_git", lambda args, **kw: next(seq))
 
     result = evolve.run_evolve(limit=50)
     assert result.losses_improved == 0
-    assert result.commit_sha is None
+    assert result.commit_sha == "deadbeef", (
+        "v0.5.28 would have left dirty repo uncommitted because improved=0; "
+        "v0.5.29 commits any dirty state at end-of-cycle."
+    )
+
+
+def test_recheck_fires_run_ab_with_evolve_id_trigger(monkeypatch, tmp_path):
+    """v0.5.29: after improvements, recheck the same losses so the eval log
+    has paired before/after rows. Trigger MUST be 'evolve_recheck:<id>' so
+    the UI can group by evolution."""
+    from brain_mcp import evolve
+
+    captured: list[dict] = []
+    def fake_run_ab(question, evidence, trigger, qhash):
+        captured.append({"question": question, "trigger": trigger, "qhash": qhash})
+    import brain_mcp.eval as _eval_mod
+    monkeypatch.setattr(_eval_mod, "_run_ab", fake_run_ab)
+    monkeypatch.setattr(evolve, "_build_evidence_block", lambda q: "FAKE_EVIDENCE")
+    monkeypatch.setattr(evolve, "EVOLVE_PROGRESS_PATH", tmp_path / "p.jsonl")
+
+    losses = [
+        {"question": "where does the SOR live?"},
+        {"question": "what's the partner fee model?"},
+    ]
+    summary = evolve._run_rechecks(losses, evolve_id="evo12345", cycle_id="cyc")
+    assert summary["fired"] == 2
+    assert summary["errored"] == 0
+    triggers = {c["trigger"] for c in captured}
+    assert triggers == {"evolve_recheck:evo12345"}
+    questions = {c["question"] for c in captured}
+    assert questions == {l["question"] for l in losses}
+
+
+def test_recheck_skips_empty_question(monkeypatch, tmp_path):
+    from brain_mcp import evolve
+    monkeypatch.setattr(evolve, "EVOLVE_PROGRESS_PATH", tmp_path / "p.jsonl")
+    out = evolve._recheck_one({"question": ""}, evolve_id="x", cycle_id="c")
+    assert out["fired"] is False
+    assert out["reason"] == "empty_question"
