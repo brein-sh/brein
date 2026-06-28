@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.30] - 2026-06-28
+
+### Added
+- **`brain_admitted_no_answer` boolean on every A/B eval row.** Structured signal from the judge LLM: true when answer A explicitly admits it could not find a useful answer in the brain ("I don't have this", "no record of", "couldn't find"), false when A merely answered poorly. Replaces the prior brittle regex-on-brain-answer in the telemetry UI. Old rows lack the field → falsy → not counted. No backfill.
+
 ## [0.5.29] - 2026-06-28
 
 ### Added

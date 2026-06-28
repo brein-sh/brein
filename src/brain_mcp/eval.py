@@ -239,7 +239,7 @@ def _ask(prompt: str, disable_brain: bool = False) -> tuple[str, str, dict[str, 
 
 
 # ── Judge ────────────────────────────────────────────────────────────────
-def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str, str, str, dict[str, Any]]:
+def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str, str, str, bool, dict[str, Any]]:
     prompt = (
         "Compare two AI assistants answering the same question. Pick which is "
         "more helpful, accurate, and specific. If they are equivalent or both "
@@ -249,16 +249,21 @@ def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str,
         "(internal facts, decisions, people, dates). General training data alone cannot answer.\n"
         "  - general: answerable from general training-data knowledge alone, no company context needed.\n"
         "  - mixed: needs both — a general topic with a company-specific angle.\n\n"
+        "Also flag whether Answer A explicitly admitted it could not find a "
+        "useful answer in the brain (e.g. 'I don't have this', 'no record of', "
+        "'couldn't find', 'not in the docs'). True only if A says it gave up — "
+        "NOT if A simply answered poorly.\n\n"
         f"Question: {question[:1000]}\n\n"
         f"Answer A (with brain retrieval):\n{brain_answer[:2000]}\n\n"
         f"Answer B (no brain, model knowledge only):\n{no_brain_answer[:2000]}\n\n"
         'Respond with JSON only: {"verdict": "brain_better" | "no_brain_better" | "tie", '
         '"reason": "one short sentence", '
-        '"question_class": "internal_only" | "general" | "mixed"}'
+        '"question_class": "internal_only" | "general" | "mixed", '
+        '"brain_admitted_no_answer": true | false}'
     )
     raw, _, meta = _ask(prompt, disable_brain=True)
     if not raw:
-        return "tie", "judge_unavailable", "unknown", meta
+        return "tie", "judge_unavailable", "unknown", False, meta
     try:
         start = raw.find("{")
         end = raw.rfind("}")
@@ -270,10 +275,11 @@ def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str,
             qclass = parsed.get("question_class", "unknown")
             if qclass not in {"internal_only", "general", "mixed"}:
                 qclass = "unknown"
-            return verdict, str(parsed.get("reason", ""))[:240], qclass, meta
+            admitted = bool(parsed.get("brain_admitted_no_answer", False))
+            return verdict, str(parsed.get("reason", ""))[:240], qclass, admitted, meta
     except Exception:
         pass
-    return "tie", "judge_parse_error", "unknown", meta
+    return "tie", "judge_parse_error", "unknown", False, meta
 
 
 def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -> None:
@@ -309,7 +315,9 @@ def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -
     if not brain_answer and not no_brain:
         return
 
-    verdict, reason, question_class, judge_meta = _judge(question, brain_answer, no_brain)
+    verdict, reason, question_class, brain_admitted_no_answer, judge_meta = _judge(
+        question, brain_answer, no_brain,
+    )
 
     def _num(d: dict[str, Any], k: str) -> float:
         v = d.get(k)
@@ -331,6 +339,7 @@ def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -
         "verdict": verdict,
         "reason": reason,
         "question_class": question_class,
+        "brain_admitted_no_answer": brain_admitted_no_answer,
         "backend": backend,
         # Per-arm metadata — wall-clock, tokens, cost, turns, cache hits, etc.
         "brain_meta": brain_meta,
