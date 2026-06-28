@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.25] - 2026-06-28
+
+### Fixed
+- **`brein evolve run` died with `NameError: name 'json' is not defined`.** The new `_cmd_evolve` handler in v0.5.24 used `json.dumps(...)` to print the result, but `cli.py` had never imported `json` (the existing eval/consistency handlers happened not to need it). Caught the moment Samuel actually ran the shipped command. Test added that exercises `_cmd_evolve` end-to-end and asserts the JSON output reaches stdout.
+
 ## [0.5.24] - 2026-06-28
 
 ### Added

@@ -185,6 +185,29 @@ def test_run_evolve_appends_result_row(monkeypatch, tmp_path):
     assert rows[0]["losses_improved"] == 1
 
 
+def test_cmd_evolve_does_not_nameerror_on_json(monkeypatch, capsys):
+    """Regression: _cmd_evolve uses json.dumps; cli.py must import json.
+    Caught in production v0.5.24 — `brein evolve run` died with
+    NameError: name 'json' is not defined."""
+    from brain_mcp import cli, evolve
+
+    class FakeResult:
+        def to_json(self):
+            return {"evolve_id": "x", "losses_improved": 0}
+
+    monkeypatch.setattr(evolve, "run_evolve", lambda limit=50: FakeResult())
+
+    class Args:
+        action = "run"
+        limit = 50
+        quiet = False
+
+    rc = cli._cmd_evolve(Args())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "evolve_id" in out  # confirms json.dumps actually ran
+
+
 def test_run_evolve_no_commit_when_zero_improved(monkeypatch, tmp_path):
     """If the agent picks 'skipped' for every loss, no commit attempted."""
     from brain_mcp import evolve, shared
