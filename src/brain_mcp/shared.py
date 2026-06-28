@@ -1,4 +1,5 @@
-"""Path-safe filesystem, git, markdown parsing, keyword scoring, and retrieval log."""
+"""Path-safe filesystem, git, markdown parsing, keyword scoring, retrieval log,
+and shared LLM invocation (CLI-first, OpenRouter fallback)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,10 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
+import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -226,3 +230,195 @@ def _append_retrieval_log(
     except Exception:
         # ponytail: log write must never break a retrieval — silent here is OK.
         pass
+
+
+# ── LLM invocation: CLI first, OpenRouter fallback ──────────────────────────
+#
+# Shared by eval (one-shot judge / A-vs-B prompts) and consistency (agentic
+# resolver with tool access). Both call `ask_llm`.
+
+# Recursion guard: when a parent invokes claude/codex/gemini that itself talks
+# to brain MCP, the child reads this env var to skip its own eval/consistency
+# spawn, preventing a fork bomb.
+LLM_GUARD_ENV = "BRAIN_EVAL_IN_PROGRESS"
+_DEFAULT_CLI_PREFERENCE = "claude,codex,gemini"
+
+
+def _llm_cli_preference() -> list[str]:
+    return (os.environ.get("BRAIN_EVAL_CLIENT") or _DEFAULT_CLI_PREFERENCE).split(",")
+
+
+def _which_llm_cli() -> str | None:
+    """First available CLI in preference order, or None."""
+    for name in _llm_cli_preference():
+        name = name.strip()
+        if name and shutil.which(name):
+            return name
+    return None
+
+
+def _llm_cli_completion(
+    cli: str,
+    prompt: str,
+    *,
+    disable_brain: bool = False,
+    allowed_tools: list[str] | None = None,
+    cwd: str | None = None,
+    timeout_s: float = 120.0,
+) -> tuple[str, dict[str, Any]]:
+    """Headless completion via `<cli> -p <prompt>`.
+
+    allowed_tools: when set AND cli == "claude", passes `--allowed-tools` so
+    the model can call Read/Grep/Glob/Edit. Other CLIs ignore (one-shot only).
+    """
+    env = os.environ.copy()
+    env[LLM_GUARD_ENV] = "1"
+    if disable_brain:
+        env["BRAIN_EVAL_DISABLE"] = "1"
+    cwd = cwd or os.path.expanduser("~")
+    prompt_chars = len(prompt)
+
+    use_json = (cli == "claude")
+    cmd: list[str] = [cli, "-p", prompt]
+    if use_json:
+        cmd += ["--output-format", "json"]
+    if allowed_tools and cli == "claude":
+        cmd += ["--allowed-tools", ",".join(allowed_tools)]
+
+    meta: dict[str, Any] = {
+        "cli": cli,
+        "disable_brain": disable_brain,
+        "allowed_tools": list(allowed_tools) if allowed_tools else [],
+        "prompt_chars": prompt_chars,
+        "prompt_tokens_est": prompt_chars // 4,
+        "timed_out": False,
+    }
+    t0 = time.perf_counter()
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_s, env=env, cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        meta["timed_out"] = True
+        meta["returncode"] = None
+        return "", meta
+    except Exception as exc:
+        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        meta["error"] = f"{type(exc).__name__}: {exc}"
+        return "", meta
+
+    meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    meta["returncode"] = r.returncode
+    meta["stdout_chars"] = len(r.stdout or "")
+    meta["stderr_chars"] = len(r.stderr or "")
+
+    if r.returncode != 0:
+        return "", meta
+
+    raw = (r.stdout or "").strip()
+    text = raw
+
+    if use_json and raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+            text = str(payload.get("result", "") or "").strip()
+            usage = payload.get("usage", {}) or {}
+            meta["input_tokens"] = usage.get("input_tokens")
+            meta["output_tokens"] = usage.get("output_tokens")
+            meta["cache_creation_input_tokens"] = usage.get("cache_creation_input_tokens")
+            meta["cache_read_input_tokens"] = usage.get("cache_read_input_tokens")
+            meta["cost_usd"] = payload.get("total_cost_usd")
+            meta["num_turns"] = payload.get("num_turns")
+            meta["duration_ms"] = payload.get("duration_ms")
+            meta["duration_api_ms"] = payload.get("duration_api_ms")
+            meta["session_id"] = payload.get("session_id")
+            meta["is_error"] = payload.get("is_error", False)
+        except Exception:
+            meta["json_parse_failed"] = True
+
+    meta["answer_chars"] = len(text)
+    meta["answer_tokens_est"] = len(text) // 4
+    return text, meta
+
+
+def _llm_openrouter_completion(prompt: str, *, timeout_s: float = 60.0) -> tuple[str, dict[str, Any]]:
+    or_key = os.environ.get("BRAIN_EVAL_OPENROUTER_KEY", "")
+    or_model = os.environ.get("BRAIN_EVAL_MODEL", "deepseek/deepseek-v4-flash")
+    meta: dict[str, Any] = {
+        "cli": None,
+        "openrouter_model": or_model,
+        "prompt_chars": len(prompt),
+        "prompt_tokens_est": len(prompt) // 4,
+    }
+    if not or_key:
+        meta["error"] = "no_openrouter_key"
+        return "", meta
+    body = {
+        "model": or_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1024,
+        "temperature": 0,
+    }
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {or_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://brein.sh",
+            "X-Title": "brain-mcp",
+        },
+        method="POST",
+    )
+    t0 = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            text = str(data["choices"][0]["message"]["content"])
+            meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            usage = data.get("usage", {}) or {}
+            meta["input_tokens"] = usage.get("prompt_tokens")
+            meta["output_tokens"] = usage.get("completion_tokens")
+            meta["total_tokens"] = usage.get("total_tokens")
+            meta["answer_chars"] = len(text)
+            meta["answer_tokens_est"] = len(text) // 4
+            return text, meta
+    except Exception as exc:
+        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        meta["error"] = f"{type(exc).__name__}: {exc}"
+        return "", meta
+
+
+def ask_llm(
+    prompt: str,
+    *,
+    disable_brain: bool = False,
+    allowed_tools: list[str] | None = None,
+    cwd: str | None = None,
+    timeout_s: float = 120.0,
+) -> tuple[str, str, dict[str, Any]]:
+    """Best available backend. Returns (text, backend_tag, meta).
+
+    allowed_tools turns on agentic mode on claude (Read/Grep/Glob/Edit). Other
+    CLIs run one-shot. OpenRouter fallback always runs one-shot.
+    """
+    cli = _which_llm_cli()
+    if cli:
+        if allowed_tools and cli == "claude":
+            tag = f"cli:{cli}+agentic"
+        elif disable_brain:
+            tag = f"cli:{cli}+tools:no-brain"
+        else:
+            tag = f"cli:{cli}+tools"
+        text, meta = _llm_cli_completion(
+            cli, prompt,
+            disable_brain=disable_brain,
+            allowed_tools=allowed_tools,
+            cwd=cwd,
+            timeout_s=timeout_s,
+        )
+        return text, tag, meta
+    or_model = os.environ.get("BRAIN_EVAL_MODEL", "deepseek/deepseek-v4-flash")
+    text, meta = _llm_openrouter_completion(prompt, timeout_s=min(timeout_s, 60.0))
+    return text, f"openrouter:{or_model}", meta

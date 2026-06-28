@@ -28,37 +28,33 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import REPO_PATH
+from .shared import (
+    LLM_GUARD_ENV as EVAL_GUARD_ENV,
+    _which_llm_cli,
+    ask_llm,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────
 EVAL_ENABLED = os.environ.get("BRAIN_EVAL_ENABLED", "on").lower() != "off"
-
-# Recursion guard: when we subprocess claude/codex, we set this env var so
-# the child's brain_evidence call doesn't trigger another eval.
-EVAL_GUARD_ENV = "BRAIN_EVAL_IN_PROGRESS"
 EVAL_GUARDED = os.environ.get(EVAL_GUARD_ENV) == "1"
 
 EVAL_LOG_PATH = REPO_PATH / ".brain" / "eval-log.jsonl"
 EVAL_SEEN_PATH = Path(os.path.expanduser("~")) / ".brein" / "eval-seen.jsonl"
 EVAL_DEDUP_HOURS = float(os.environ.get("BRAIN_EVAL_DEDUP_HOURS", "24"))
 
-# CLI preference order; first match wins. Override with BRAIN_EVAL_CLIENT.
-_CLI_PREFERENCE = (os.environ.get("BRAIN_EVAL_CLIENT") or "claude,codex,gemini").split(",")
 EVAL_CLI_TIMEOUT_S = float(os.environ.get("BRAIN_EVAL_CLI_TIMEOUT_S", "120"))
 
-# OpenRouter fallback (only used if no CLI is on PATH).
+# OpenRouter env keys are read inside shared.ask_llm; the keepalive check
+# below still needs to know if OpenRouter is configured.
 _OR_KEY = os.environ.get("BRAIN_EVAL_OPENROUTER_KEY", "")
-_OR_MODEL = os.environ.get("BRAIN_EVAL_MODEL", "deepseek/deepseek-v4-flash")
-_OR_TIMEOUT_S = float(os.environ.get("BRAIN_EVAL_TIMEOUT_S", "60"))
 
 # ── Triggers ──────────────────────────────────────────────────────────────
 _DONT_KNOW_PATTERNS = [
@@ -233,157 +229,13 @@ def _commit_and_push_eval_row(commit_msg: str) -> None:
         pass
 
 
-# ── Inference: CLI first, OpenRouter fallback ────────────────────────────
+# ── Inference: thin shims around shared.ask_llm ──────────────────────────
 def _which_cli() -> str | None:
-    """Pick the first available CLI from preference order."""
-    for name in _CLI_PREFERENCE:
-        name = name.strip()
-        if name and shutil.which(name):
-            return name
-    return None
-
-
-def _cli_completion(cli: str, prompt: str, disable_brain: bool = False) -> tuple[str, dict[str, Any]]:
-    """Run a headless completion via `<cli> -p <prompt>` in a subprocess.
-
-    Returns (text, meta). text is "" on any failure. meta is a dict capturing
-    everything we can observe about the call: wall-clock latency, stdout/stderr
-    sizes, returncode, timeout flag, prompt size, and — for claude — the rich
-    JSON envelope (input/output tokens, cache tokens, cost USD, num_turns,
-    api duration). For codex/gemini we just record the shell-level stats.
-    """
-    env = os.environ.copy()
-    env[EVAL_GUARD_ENV] = "1"
-    if disable_brain:
-        env["BRAIN_EVAL_DISABLE"] = "1"
-    cwd = os.path.expanduser("~")
-    prompt_chars = len(prompt)
-
-    # Prefer claude's structured JSON output — gives us tokens + cost + turns.
-    use_json = (cli == "claude")
-    cmd = [cli, "-p", prompt] + (["--output-format", "json"] if use_json else [])
-
-    meta: dict[str, Any] = {
-        "cli": cli,
-        "disable_brain": disable_brain,
-        "prompt_chars": prompt_chars,
-        "prompt_tokens_est": prompt_chars // 4,
-        "timed_out": False,
-    }
-    t0 = time.perf_counter()
-    try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=EVAL_CLI_TIMEOUT_S,
-            env=env,
-            cwd=cwd,
-        )
-    except subprocess.TimeoutExpired:
-        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-        meta["timed_out"] = True
-        meta["returncode"] = None
-        return "", meta
-    except Exception as exc:
-        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-        meta["error"] = f"{type(exc).__name__}: {exc}"
-        return "", meta
-
-    meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-    meta["returncode"] = r.returncode
-    meta["stdout_chars"] = len(r.stdout or "")
-    meta["stderr_chars"] = len(r.stderr or "")
-
-    if r.returncode != 0:
-        return "", meta
-
-    raw = (r.stdout or "").strip()
-    text = raw
-
-    # Parse claude's JSON envelope when present.
-    if use_json and raw.startswith("{"):
-        try:
-            payload = json.loads(raw)
-            text = str(payload.get("result", "") or "").strip()
-            usage = payload.get("usage", {}) or {}
-            meta["input_tokens"] = usage.get("input_tokens")
-            meta["output_tokens"] = usage.get("output_tokens")
-            meta["cache_creation_input_tokens"] = usage.get("cache_creation_input_tokens")
-            meta["cache_read_input_tokens"] = usage.get("cache_read_input_tokens")
-            meta["cost_usd"] = payload.get("total_cost_usd")
-            meta["num_turns"] = payload.get("num_turns")
-            meta["duration_ms"] = payload.get("duration_ms")
-            meta["duration_api_ms"] = payload.get("duration_api_ms")
-            meta["session_id"] = payload.get("session_id")
-            meta["is_error"] = payload.get("is_error", False)
-        except Exception:
-            # Fall back to raw text if envelope parse fails.
-            meta["json_parse_failed"] = True
-
-    meta["answer_chars"] = len(text)
-    meta["answer_tokens_est"] = len(text) // 4
-    return text, meta
-
-
-def _openrouter_completion(prompt: str) -> tuple[str, dict[str, Any]]:
-    meta: dict[str, Any] = {
-        "cli": None,
-        "openrouter_model": _OR_MODEL,
-        "prompt_chars": len(prompt),
-        "prompt_tokens_est": len(prompt) // 4,
-    }
-    if not _OR_KEY:
-        meta["error"] = "no_openrouter_key"
-        return "", meta
-    body = {
-        "model": _OR_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1024,
-        "temperature": 0,
-    }
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {_OR_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://brein.sh",
-            "X-Title": "brain-mcp-eval",
-        },
-        method="POST",
-    )
-    t0 = time.perf_counter()
-    try:
-        with urllib.request.urlopen(req, timeout=_OR_TIMEOUT_S) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            text = str(data["choices"][0]["message"]["content"])
-            meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-            usage = data.get("usage", {}) or {}
-            meta["input_tokens"] = usage.get("prompt_tokens")
-            meta["output_tokens"] = usage.get("completion_tokens")
-            meta["total_tokens"] = usage.get("total_tokens")
-            meta["answer_chars"] = len(text)
-            meta["answer_tokens_est"] = len(text) // 4
-            return text, meta
-    except Exception as exc:
-        meta["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-        meta["error"] = f"{type(exc).__name__}: {exc}"
-        return "", meta
+    return _which_llm_cli()
 
 
 def _ask(prompt: str, disable_brain: bool = False) -> tuple[str, str, dict[str, Any]]:
-    """Run a prompt through the best available backend. Returns (text, backend, meta).
-    disable_brain=True is only meaningful for the CLI backend (sets
-    BRAIN_EVAL_DISABLE=1 on the child process so brain MCP refuses to start).
-    """
-    cli = _which_cli()
-    if cli:
-        tag = f"cli:{cli}+tools" + (":no-brain" if disable_brain else "")
-        text, meta = _cli_completion(cli, prompt, disable_brain=disable_brain)
-        return text, tag, meta
-    text, meta = _openrouter_completion(prompt)
-    return text, f"openrouter:{_OR_MODEL}", meta
+    return ask_llm(prompt, disable_brain=disable_brain, timeout_s=EVAL_CLI_TIMEOUT_S)
 
 
 # ── Judge ────────────────────────────────────────────────────────────────

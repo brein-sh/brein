@@ -4,6 +4,14 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.16] - 2026-06-28
+
+### Changed
+- **Consistency checker is now agentic and actually resolves contradictions.** Previously the post-write consistency worker was a one-shot LLM judge that wrote `{kind, suggested_fix, related_paths}` into a queue file and stopped. Nothing acted on `auto_merge` or `contradiction` findings; nothing ever picked a canonical winner; the queue just grew until someone called `brain_consistency_status`. Now the worker invokes the LLM with `Read,Grep,Glob,Edit` tool access (claude `--allowed-tools`), gives it the brain repo as cwd, and asks it to either RESOLVE or ESCALATE. When the agent picks a clear winner (`source_of_truth: true` OR newer `last_reviewed`/`decided` date), it edits the loser docs to add a `> **Superseded by [[canonical]].**` line, then the worker commits + pushes under the same `_interprocess_write_lock` brain_update uses. When the agent isn't sure, it escalates — `kind: "escalate"` lands in the queue with an `escalation_reason`. Auto-resolved findings still emit so you can audit.
+
+### Refactored
+- **Single source of truth for LLM invocation.** Previously `eval.py` had a multi-CLI selector (claude → codex → gemini → OpenRouter fallback) while `consistency.py` hardcoded `claude` and required users to set `BRAIN_JUDGE_CMD` to use anything else — Codex- and Cursor-only users got no consistency checking at all. Factored both onto `shared.ask_llm(prompt, *, disable_brain, allowed_tools, cwd, timeout_s)`. Consistency now inherits the same fallback chain. `allowed_tools` is the agentic switch — when set on claude, passes `--allowed-tools`; on other CLIs it's ignored (one-shot).
+
 ## [0.5.15] - 2026-06-28
 
 ### Fixed
