@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.26] - 2026-06-28
+
+### Fixed
+- **Evolve filtered eval-log rows by `kind == "ab_run"` — a field that does not exist on A/B rows.** Caught when Samuel actually ran `brein evolve run --limit 13` and got `losses_examined: 0` despite 13 known no-brain wins in the log. Real schema: A/B verdict rows carry the verdict at the top level with NO `kind` field; only `gate_skipped` rows have `kind`. Now `_count_ab_runs` and `_read_recent_losses` detect A/B rows by `verdict ∈ {brain_better, tie, no_brain_better}`. Tests rewritten to use the real on-disk shape rather than my made-up shape — the original v0.5.24 tests passed against a fiction. Every test in `test_evolve.py` now uses rows that would round-trip through the actual eval pipeline.
+
 ## [0.5.25] - 2026-06-28
 
 ### Fixed

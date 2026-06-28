@@ -63,6 +63,15 @@ def _now_iso() -> str:
 
 
 # ── eval-log readers ────────────────────────────────────────────────────
+#
+# Schema note: A/B verdict rows in eval-log.jsonl have NO `kind` field —
+# they carry `verdict ∈ {brain_better, tie, no_brain_better}` at top level.
+# Only `gate_skipped` rows have a `kind` field. Original v0.5.24 filtered
+# on `kind == "ab_run"` and silently matched nothing. v0.5.26 fix: detect
+# A/B rows by the presence of a verdict in the known set.
+
+_AB_VERDICTS = {"brain_better", "tie", "no_brain_better"}
+
 
 def _count_ab_runs() -> int:
     if not EVAL_LOG_PATH.exists():
@@ -73,13 +82,13 @@ def _count_ab_runs() -> int:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if d.get("kind") == "ab_run":
+        if d.get("verdict") in _AB_VERDICTS:
             n += 1
     return n
 
 
 def _read_recent_losses(limit: int = 50) -> list[dict[str, Any]]:
-    """Last N ab_run rows where the no-brain arm won."""
+    """Last N A/B verdict rows where the no-brain arm won."""
     if not EVAL_LOG_PATH.exists():
         return []
     rows: list[dict[str, Any]] = []
@@ -87,8 +96,6 @@ def _read_recent_losses(limit: int = 50) -> list[dict[str, Any]]:
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
-            continue
-        if d.get("kind") != "ab_run":
             continue
         if d.get("verdict") == "no_brain_better":
             rows.append(d)

@@ -17,16 +17,18 @@ def _write_eval_log(path, rows):
             fh.write(json.dumps(r) + "\n")
 
 
-def test_count_ab_runs_ignores_other_kinds(monkeypatch, tmp_path):
+def test_count_ab_runs_real_schema(monkeypatch, tmp_path):
+    """Real eval-log.jsonl rows: A/B verdicts have NO `kind` field, only a
+    top-level `verdict`. Only gate_skipped rows have `kind`."""
     from brain_mcp import evolve
     log = tmp_path / "eval-log.jsonl"
     _write_eval_log(log, [
-        {"kind": "ab_run", "verdict": "brain_better"},
-        {"kind": "gate_skipped"},
-        {"kind": "ab_run", "verdict": "tie"},
-        {"kind": "ab_run", "verdict": "no_brain_better"},
-        {"kind": "gate_skipped"},
-        {"kind": "ab_run", "verdict": "brain_better"},
+        {"verdict": "brain_better"},
+        {"kind": "gate_skipped", "verdict": None},
+        {"verdict": "tie"},
+        {"verdict": "no_brain_better"},
+        {"kind": "gate_skipped", "verdict": None},
+        {"verdict": "brain_better"},
     ])
     monkeypatch.setattr(evolve, "EVAL_LOG_PATH", log)
     assert evolve._count_ab_runs() == 4
@@ -36,10 +38,10 @@ def test_read_recent_losses_filters_to_no_brain_wins(monkeypatch, tmp_path):
     from brain_mcp import evolve
     log = tmp_path / "eval-log.jsonl"
     _write_eval_log(log, [
-        {"kind": "ab_run", "verdict": "brain_better", "question": "q1"},
-        {"kind": "ab_run", "verdict": "no_brain_better", "question": "q2"},
-        {"kind": "ab_run", "verdict": "tie", "question": "q3"},
-        {"kind": "ab_run", "verdict": "no_brain_better", "question": "q4"},
+        {"verdict": "brain_better", "question": "q1"},
+        {"verdict": "no_brain_better", "question": "q2"},
+        {"verdict": "tie", "question": "q3"},
+        {"verdict": "no_brain_better", "question": "q4"},
     ])
     monkeypatch.setattr(evolve, "EVAL_LOG_PATH", log)
     losses = evolve._read_recent_losses(limit=50)
@@ -50,12 +52,11 @@ def test_read_recent_losses_respects_limit(monkeypatch, tmp_path):
     from brain_mcp import evolve
     log = tmp_path / "eval-log.jsonl"
     _write_eval_log(log, [
-        {"kind": "ab_run", "verdict": "no_brain_better", "question": f"q{i}"}
+        {"verdict": "no_brain_better", "question": f"q{i}"}
         for i in range(10)
     ])
     monkeypatch.setattr(evolve, "EVAL_LOG_PATH", log)
     losses = evolve._read_recent_losses(limit=3)
-    # Most recent 3.
     assert [l["question"] for l in losses] == ["q7", "q8", "q9"]
 
 
@@ -133,7 +134,7 @@ def test_run_evolve_appends_result_row(monkeypatch, tmp_path):
 
     eval_log = tmp_path / "eval-log.jsonl"
     _write_eval_log(eval_log, [
-        {"kind": "ab_run", "verdict": "no_brain_better",
+        {"verdict": "no_brain_better",
          "question": "where does the SOR live?",
          "brain_answer": "abstract narrative",
          "no_brain_answer": "services/sor/router.py:L20-L80",
@@ -214,7 +215,7 @@ def test_run_evolve_no_commit_when_zero_improved(monkeypatch, tmp_path):
 
     eval_log = tmp_path / "eval-log.jsonl"
     _write_eval_log(eval_log, [
-        {"kind": "ab_run", "verdict": "no_brain_better",
+        {"verdict": "no_brain_better",
          "question": "q", "brain_answer": "x", "no_brain_answer": "y",
          "reason": "r"},
     ])
