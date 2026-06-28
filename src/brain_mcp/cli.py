@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import _hooks, consistency, doctor, index_state, index_worker, mcp_snippet, setup
+from . import _hooks, consistency, doctor, evolve, index_state, index_worker, mcp_snippet, setup
 from ._user_config import CONFIG_PATH, load
 
 
@@ -95,6 +95,17 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--out", default="",
                     help="Output file (for `capture-prompt`)")
     ev.set_defaults(func=_cmd_eval)
+
+    evo = sub.add_parser(
+        "evolve",
+        help="Self-improvement: amend brain docs from recent A/B losses",
+    )
+    evo.add_argument("action", choices=["run", "status"], nargs="?", default="run")
+    evo.add_argument("--limit", type=int, default=50,
+                     help="Max recent no-brain wins to examine in one run")
+    evo.add_argument("--quiet", action="store_true",
+                     help="Suppress non-JSON output (used by detached spawn)")
+    evo.set_defaults(func=_cmd_evolve)
 
     dm = sub.add_parser(
         "daemon",
@@ -361,6 +372,21 @@ def _launchd_plist(host: str, port: int, brain_mcp_path: str) -> str:
 </dict>
 </plist>
 """
+
+
+def _cmd_evolve(args: argparse.Namespace) -> int:
+    """`brein evolve run` — read recent no-brain wins from eval-log.jsonl,
+    invoke the agentic improver on each, commit + push patches.
+
+    `brein evolve status` — print the last 10 evolve runs."""
+    if args.action == "status":
+        rows = evolve.read_log(limit=10)
+        print(json.dumps(rows, indent=2))
+        return 0
+    result = evolve.run_evolve(limit=args.limit)
+    if not args.quiet:
+        print(json.dumps(result.to_json(), indent=2))
+    return 0
 
 
 def _cmd_daemon(args: argparse.Namespace) -> int:

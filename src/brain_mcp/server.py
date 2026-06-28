@@ -517,6 +517,29 @@ def brain_consistency_status(max_results: int = 20, clear: bool = False) -> str:
     return _json(payload)
 
 
+@mcp.tool(name="brain_evolve_status")
+@logged("brain_evolve_status")
+def brain_evolve_status(max_results: int = 10) -> str:
+    """Return recent self-improvement runs from ~/.brein/evolve-log.jsonl.
+
+    Every BRAIN_EVOLVE_EVERY (default 50) ab_run rows trigger a detached
+    evolve worker that reads recent no-brain-better verdicts, identifies
+    the canonical brain doc per loss, verifies the concrete refs the
+    no-brain answer used, and appends a `## Source references` section
+    to the brain doc so the next similar question wins.
+
+    Each row reports: evolve_id, losses_examined, losses_improved,
+    losses_escalated, losses_skipped, commit_sha, and per-loss detail.
+    """
+    from . import evolve as _evolve
+    rows = _evolve.read_log(limit=max_results)
+    return _json({
+        "log_path": str(_evolve.EVOLVE_LOG_PATH),
+        "trigger_every": _evolve.EVOLVE_TRIGGER_EVERY,
+        "runs": rows,
+    })
+
+
 @mcp.tool(name="brain_audit")
 @logged("brain_audit")
 def brain_audit() -> str:

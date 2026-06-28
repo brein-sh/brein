@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.24] - 2026-06-28
+
+### Added
+- **`/evolve` — self-improvement loop.** The first 102 A/B eval rows produced one single failure mode across **all 13/13** no-brain wins: the no-brain answer cited concrete file paths / line numbers / function names that the brain doc lacked. Brain wasn't losing on knowledge — it was losing on **specificity**. So `evolve.run_evolve(limit=50)` now reads the recent `no_brain_better` rows from `eval-log.jsonl`, and for each loss invokes the agentic LLM with `Read,Grep,Glob,Edit` tools to: (1) find the canonical brain doc for the question, (2) verify the concrete refs the no-brain answer used against the actual source under `~/Documents/GitHub/<repo>`, (3) edit the brain doc to add a `## Source references` section listing the verified refs. All edits land in one combined `evolve:` commit + push under the same write lock `brain_update` and consistency use. Per-run results go to `~/.brein/evolve-log.jsonl` with per-loss outcomes (`improved`/`skipped`/`escalated`). Auto-fires every `BRAIN_EVOLVE_EVERY=50` ab_runs (recursion-guarded via `BRAIN_EVOLVE_IN_PROGRESS`). Manual: `brein evolve run` / `brein evolve status`. New MCP tool: `brain_evolve_status`. Hardcoded "no edits without verified refs" rule — agent must Grep the source and confirm each path; never paste an unverified ref.
+
 ## [0.5.23] - 2026-06-28
 
 ### Changed

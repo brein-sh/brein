@@ -406,6 +406,15 @@ def _tick(question: str, evidence_block: str, query_hash: str, trigger: str) -> 
             _commit_and_push_eval_row(
                 f"eval(ab): {question[:60].splitlines()[0]}"
             )
+            # Self-improvement: every N ab_runs, spawn an agentic worker
+            # that reads recent no-brain wins and amends the canonical
+            # brain doc with verified file paths / line refs. Detached;
+            # no impact on this eval row's commit.
+            try:
+                from . import evolve as _evolve
+                _evolve.maybe_trigger_after_ab()
+            except Exception:
+                pass
         finally:
             _release_claim(query_hash)
     except Exception:

@@ -1,0 +1,219 @@
+"""Self-improvement loop: trigger arithmetic, loss filtering, agent integration."""
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+
+def _write_eval_log(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+
+def test_count_ab_runs_ignores_other_kinds(monkeypatch, tmp_path):
+    from brain_mcp import evolve
+    log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(log, [
+        {"kind": "ab_run", "verdict": "brain_better"},
+        {"kind": "gate_skipped"},
+        {"kind": "ab_run", "verdict": "tie"},
+        {"kind": "ab_run", "verdict": "no_brain_better"},
+        {"kind": "gate_skipped"},
+        {"kind": "ab_run", "verdict": "brain_better"},
+    ])
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", log)
+    assert evolve._count_ab_runs() == 4
+
+
+def test_read_recent_losses_filters_to_no_brain_wins(monkeypatch, tmp_path):
+    from brain_mcp import evolve
+    log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(log, [
+        {"kind": "ab_run", "verdict": "brain_better", "question": "q1"},
+        {"kind": "ab_run", "verdict": "no_brain_better", "question": "q2"},
+        {"kind": "ab_run", "verdict": "tie", "question": "q3"},
+        {"kind": "ab_run", "verdict": "no_brain_better", "question": "q4"},
+    ])
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", log)
+    losses = evolve._read_recent_losses(limit=50)
+    assert [l["question"] for l in losses] == ["q2", "q4"]
+
+
+def test_read_recent_losses_respects_limit(monkeypatch, tmp_path):
+    from brain_mcp import evolve
+    log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(log, [
+        {"kind": "ab_run", "verdict": "no_brain_better", "question": f"q{i}"}
+        for i in range(10)
+    ])
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", log)
+    losses = evolve._read_recent_losses(limit=3)
+    # Most recent 3.
+    assert [l["question"] for l in losses] == ["q7", "q8", "q9"]
+
+
+def test_maybe_trigger_fires_on_multiple_of_50(monkeypatch):
+    from brain_mcp import evolve
+    monkeypatch.delenv(evolve.EVOLVE_GUARD_ENV, raising=False)
+    monkeypatch.setattr(evolve, "_count_ab_runs", lambda: 50)
+    spawned: list = []
+    monkeypatch.setattr(evolve, "_spawn_detached", lambda: spawned.append(1) or 12345)
+    pid = evolve.maybe_trigger_after_ab()
+    assert pid == 12345 and len(spawned) == 1
+
+
+def test_maybe_trigger_silent_on_non_multiple(monkeypatch):
+    from brain_mcp import evolve
+    monkeypatch.delenv(evolve.EVOLVE_GUARD_ENV, raising=False)
+    monkeypatch.setattr(evolve, "_count_ab_runs", lambda: 49)
+    monkeypatch.setattr(
+        evolve, "_spawn_detached",
+        lambda: pytest.fail("must not spawn when count is not a multiple"),
+    )
+    assert evolve.maybe_trigger_after_ab() is None
+
+
+def test_maybe_trigger_silent_on_zero(monkeypatch):
+    """0 % 50 == 0 must NOT fire — there's nothing to improve from."""
+    from brain_mcp import evolve
+    monkeypatch.delenv(evolve.EVOLVE_GUARD_ENV, raising=False)
+    monkeypatch.setattr(evolve, "_count_ab_runs", lambda: 0)
+    monkeypatch.setattr(
+        evolve, "_spawn_detached",
+        lambda: pytest.fail("must not spawn when count is 0"),
+    )
+    assert evolve.maybe_trigger_after_ab() is None
+
+
+def test_maybe_trigger_respects_guard_env(monkeypatch):
+    """An evolve worker that itself calls into the brain MUST NOT recurse."""
+    from brain_mcp import evolve
+    monkeypatch.setenv(evolve.EVOLVE_GUARD_ENV, "1")
+    monkeypatch.setattr(evolve, "_count_ab_runs", lambda: 50)
+    monkeypatch.setattr(
+        evolve, "_spawn_detached",
+        lambda: pytest.fail("must not spawn when guard env is set"),
+    )
+    assert evolve.maybe_trigger_after_ab() is None
+
+
+def test_spawn_detached_uses_module_invocation(monkeypatch, tmp_path):
+    """Same launchd-PATH lesson as consistency: invoke via sys.executable -m."""
+    from brain_mcp import evolve
+    monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve.jsonl")
+    captured: dict = {}
+
+    class FakeProc:
+        pid = 42
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["env"] = kw.get("env", {})
+        return FakeProc()
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    evolve._spawn_detached()
+    assert captured["cmd"][0] == sys.executable
+    assert captured["cmd"][1:4] == ["-m", "brain_mcp.cli", "evolve"]
+    assert captured["cmd"][4] == "run"
+    # Recursion guard goes through the env so the spawned worker won't
+    # re-fire evolve when its own eval write completes.
+    assert captured["env"].get(evolve.EVOLVE_GUARD_ENV) == "1"
+
+
+def test_run_evolve_appends_result_row(monkeypatch, tmp_path):
+    """End-to-end with a stubbed agent: read losses → ask_llm → log row."""
+    from brain_mcp import evolve, shared
+
+    eval_log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(eval_log, [
+        {"kind": "ab_run", "verdict": "no_brain_better",
+         "question": "where does the SOR live?",
+         "brain_answer": "abstract narrative",
+         "no_brain_answer": "services/sor/router.py:L20-L80",
+         "reason": "B had concrete paths"},
+    ])
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", eval_log)
+    monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve-log.jsonl")
+
+    # Stub the agent.
+    valid = json.dumps({
+        "kind": "improved",
+        "confidence": "high",
+        "canonical_path": "docs/decisions/sor.md",
+        "verified_refs_added": ["services/sor/router.py:L20-L80"],
+        "edits_applied": True,
+        "summary": "added 1 verified ref",
+        "escalation_reason": None,
+    })
+    monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (valid, "cli:fake", {}))
+
+    # Stub commit + push (test should not touch git).
+    @contextlib.contextmanager
+    def fake_lock():
+        yield
+    monkeypatch.setattr(shared, "_interprocess_write_lock", fake_lock)
+
+    class R:
+        def __init__(self, out="", rc=0):
+            self.stdout = out
+            self.returncode = rc
+
+    seq = iter([
+        R(" M docs/decisions/sor.md\n"),  # status: dirty
+        R(""),                              # add -A
+        R(""),                              # commit
+        R(""),                              # push
+        R("abc1234\n"),                     # rev-parse
+    ])
+    monkeypatch.setattr(shared, "_run_git", lambda args, **kw: next(seq))
+
+    result = evolve.run_evolve(limit=50)
+    assert result.losses_examined == 1
+    assert result.losses_improved == 1
+    assert result.losses_skipped == 0
+    assert result.commit_sha == "abc1234"
+
+    rows = evolve.read_log(limit=10)
+    assert len(rows) == 1
+    assert rows[0]["losses_improved"] == 1
+
+
+def test_run_evolve_no_commit_when_zero_improved(monkeypatch, tmp_path):
+    """If the agent picks 'skipped' for every loss, no commit attempted."""
+    from brain_mcp import evolve, shared
+
+    eval_log = tmp_path / "eval-log.jsonl"
+    _write_eval_log(eval_log, [
+        {"kind": "ab_run", "verdict": "no_brain_better",
+         "question": "q", "brain_answer": "x", "no_brain_answer": "y",
+         "reason": "r"},
+    ])
+    monkeypatch.setattr(evolve, "EVAL_LOG_PATH", eval_log)
+    monkeypatch.setattr(evolve, "EVOLVE_LOG_PATH", tmp_path / "evolve-log.jsonl")
+
+    skipped = json.dumps({
+        "kind": "skipped",
+        "confidence": "low",
+        "canonical_path": None,
+        "verified_refs_added": [],
+        "edits_applied": False,
+        "summary": "no canonical doc",
+        "escalation_reason": None,
+    })
+    monkeypatch.setattr(shared, "ask_llm", lambda *a, **kw: (skipped, "cli:fake", {}))
+    # If commit is attempted, fail loudly.
+    monkeypatch.setattr(
+        shared, "_run_git",
+        lambda *a, **kw: pytest.fail("no commit should be attempted"),
+    )
+
+    result = evolve.run_evolve(limit=50)
+    assert result.losses_improved == 0
+    assert result.commit_sha is None
