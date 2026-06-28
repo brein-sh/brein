@@ -136,6 +136,21 @@ Your job: investigate, then either RESOLVE or ESCALATE.
 
 You have these tools: Read, Grep, Glob, Edit. Use them.
 
+**Ground truth lives in source code, not in docs.** When a doc makes a
+claim about a specific repo (e.g. "SOR lives in pmxt-trading", "the
+escrow contract has a `usedNonces` mapping", "operator-api is single-
+threaded"), you can and should Read or Grep the actual codebase to
+verify. Common local source locations: `~/Documents/GitHub/<repo>` for
+pmxt repos (pmxt-trading, hosted-pmxt, pmxt, pmxt-execution, etc.).
+A doc that contradicts the code is the loser, regardless of date or
+source_of_truth flag.
+
+Order of evidence (strongest first):
+  1. The actual source code, if a doc makes a code-level claim.
+  2. `source_of_truth: true` frontmatter.
+  3. Newer `last_reviewed` / `decided` date.
+  4. Snippet match quality.
+
 Decide one of:
 
   - "ok"          — new doc is independent / complementary. Do nothing.

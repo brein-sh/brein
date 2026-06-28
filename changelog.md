@@ -4,6 +4,11 @@ All notable changes to brein are documented here. Format: [Keep a Changelog](htt
 
 A push to `main` that adds a new `## [X.Y.Z] - YYYY-MM-DD` heading is auto-tagged `vX.Y.Zf` and published by `publish.yml`. Tags ending in `f` skip tests (force release).
 
+## [0.5.20] - 2026-06-28
+
+### Changed
+- **Agentic consistency prompt now tells the agent to verify against source code.** Previously the prompt only talked about reading other brain docs to break ties — but the agent already had `Read`/`Grep`/`Glob` access to any file the worker process could see, including local source checkouts under `~/Documents/GitHub/`. New evidence ladder: source code > `source_of_truth: true` frontmatter > newer date > snippet match. A doc that contradicts the code is the loser regardless of metadata. Common pmxt repo locations are listed in the prompt as a hint.
+
 ## [0.5.19] - 2026-06-28
 
 ### Fixed
