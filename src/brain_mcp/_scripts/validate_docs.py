@@ -134,6 +134,46 @@ def check_staleness(
     return errs, warns
 
 
+# Sections that are meant to be MAP-level pointers. Brittle specifics
+# (line numbers, file:line refs) inside these sections rot on every
+# refactor and are exactly the failure mode the evolve loop used to feed.
+_POINTER_SECTION_HEADERS = (
+    "## Where to look",
+    "## Source references",
+    "## Pointers",
+)
+_BRITTLE_PATTERNS_DOC = (
+    re.compile(r":L\d+"),
+    re.compile(r"\.[a-zA-Z]{1,5}:\d+"),
+    re.compile(r"\(lines?\s+\d+", re.IGNORECASE),
+)
+
+
+def check_pointer_sections(path: Path, text: str) -> list[str]:
+    """Inside a pointer section, reject line-number refs. Prose and code
+    fences elsewhere in the doc are not checked — only the sections that
+    are supposed to be module-level navigation."""
+    errs: list[str] = []
+    lines = text.splitlines()
+    in_pointer = False
+    for i, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_pointer = any(stripped == h for h in _POINTER_SECTION_HEADERS)
+            continue
+        if not in_pointer:
+            continue
+        for pat in _BRITTLE_PATTERNS_DOC:
+            m = pat.search(line)
+            if m:
+                errs.append(
+                    f"{path}:{i}: brittle specific {m.group(0)!r} in pointer section "
+                    f"(pointers must be module-level, not line-numbered)"
+                )
+                break
+    return errs
+
+
 def check_status(path: Path, fm: dict[str, str]) -> list[str]:
     """Return status taxonomy errors for one doc."""
     raw_status = fm.get("status", "").strip().lower()
@@ -224,6 +264,7 @@ def main() -> int:
                     stale_errs, stale_warns = check_staleness(path, fm, today)
                     errors.extend(stale_errs)
                     warnings.extend(stale_warns)
+                    errors.extend(check_pointer_sections(path, text))
             if path.is_relative_to(ROOT / "skills") and path.name == "SKILL.md":
                 if not text.startswith("---"):
                     errors.append(f"{path}: skill frontmatter must start at byte 0")

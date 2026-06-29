@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -96,7 +97,13 @@ def _count_ab_runs() -> int:
 
 
 def _read_recent_losses(limit: int = 50) -> list[dict[str, Any]]:
-    """Last N A/B verdict rows where the no-brain arm won."""
+    """Last N A/B rows that carry an explicit `lesson` (trajectory gate fired).
+
+    Old rows without `lesson` are intentionally ignored — they were judged
+    by the pairwise "more specific" rubric, which is the rot-pump we
+    replaced. Re-evaluating them under the new gate is fine; learning from
+    them under the old verdict is not.
+    """
     if not EVAL_LOG_PATH.exists():
         return []
     rows: list[dict[str, Any]] = []
@@ -105,7 +112,7 @@ def _read_recent_losses(limit: int = 50) -> list[dict[str, Any]]:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if d.get("verdict") == "no_brain_better":
+        if d.get("lesson"):
             rows.append(d)
     return rows[-limit:]
 
@@ -115,44 +122,77 @@ def _read_recent_losses(limit: int = 50) -> list[dict[str, Any]]:
 _EVOLVE_PROMPT = """You are the brain self-improvement agent for the company brain at:
 {repo}
 
-An A/B eval just lost. A "brain-on" answer (A) was beaten by a "no-brain"
-(grep/repo-only) answer (B) on the question below. Across all observed
-historical losses the pattern is identical: B cited concrete file paths,
-line numbers, function names, or commit hashes; A was abstract / narrative.
+The brain is a MAP, not a manual. It points an agent at the right repo or
+module; the agent re-derives line-level specifics by reading live source.
+Line numbers, exact symbol names, and pasted function bodies ROT on the
+next refactor — they have no place here.
 
-Your job: figure out the canonical brain doc for this question, verify the
-concrete refs B used, and edit the brain doc to embed them so the next
-similar question wins.
+An eval gate just identified a missing pointer. On the question below,
+a no-brain agent (with grep/repo tools only) had to discover files that
+the brain-on agent never opened. Those files are the brain's blind spot.
+
+Your job: add a one-line, MODULE-LEVEL pointer to the right brain doc so
+next time the brain-on agent goes there first.
 
 You have these tools: Read, Grep, Glob, Edit. Use them.
 
-Workflow:
-  1. From the question, find which brain doc is the canonical source.
-     Use Grep over `docs/` for the topic, then Read candidates to confirm.
-     Prefer docs with `source_of_truth: true` frontmatter.
-     If no clear canonical doc exists, output kind="skipped" — this loop
-     improves existing docs only; it does not create new ones.
-  2. Read BOTH answers fully. Extract every concrete ref the no-brain
-     answer (B) used: file paths, line ranges, function names, commit hashes.
-  3. VERIFY every ref. Grep / Read the actual source at
-     `{brain_repo_parent}/<repo>/...` (the user keeps repos at
-     `~/Documents/GitHub/<repo>`). Drop any ref you cannot confirm exists
-     in the current source. NEVER paste a path you didn't verify.
-  4. Edit the brain doc to add or extend a section titled exactly
-     `## Source references`. Format each ref as a markdown list item:
-        - `path/to/file.py:L42-L80` — what the reader will find there
-     Preserve frontmatter exactly; do not rewrite other sections.
-  5. If you couldn't verify any refs at all, output kind="skipped" — the
-     no-brain win might have been a hallucination, no edit warranted.
+Inputs:
+  Topic            : {topic}
+  Pointer files    : {pointer_files}
+                     (these are the files no-brain converged on; treat
+                     them as candidates, not as ground truth — verify
+                     each one exists at its current path before pointing
+                     to it)
 
-Rules:
-  - Idempotent: if `## Source references` already exists, only APPEND new
-    refs; never duplicate an existing one.
-  - Never invent paths/lines.
-  - Never edit a doc you didn't first Read in full.
-  - If the canonical doc is ambiguous (multiple plausible candidates) or
-    the question spans multiple docs, output kind="escalated" with an
-    escalation_reason.
+Workflow:
+  1. Verify each pointer file still exists (Glob / Read). Drop any that
+     don't. If none survive, output kind="skipped".
+  2. Reduce each pointer to its module — the directory or a short path
+     that names the area, NOT the specific file. e.g. `services/auth/`
+     not `services/auth/handlers/login.py`. A module rename is rare; a
+     file-or-line change is constant.
+  3. Find the canonical brain doc for this topic. Grep `docs/` for the
+     topic keywords; Read the top candidates. Prefer docs with
+     `source_of_truth: true` frontmatter. If a clearly-canonical doc
+     exists, edit it. If NO doc covers this topic at all, create a new
+     pointer doc at `docs/pointers/<slug>.md` (slug = kebab-case topic).
+  4. Add or extend a section titled exactly `## Where to look`. Format
+     each entry as:
+        - `path/to/module/` — one short sentence: what lives here.
+     ONE entry per module. Do not list individual files. Do not include
+     line numbers, line ranges, function names, class names, or pasted
+     code. Pointers, not facts.
+  5. Preserve frontmatter exactly. Do not rewrite other sections.
+
+Hard rules — violations will be rejected at commit time and the entire
+edit reverted, wasting the cycle. Read carefully:
+  - NO `:L<digits>` anywhere in your final edit (e.g. `foo.py:L42`).
+  - NO `:<digits>` line refs (e.g. `foo.py:42`, `auth.ts:100-150`).
+  - NO line ranges anywhere — "lines 100-200", "(lines 42-80)", "L42-L80".
+  - NO pasted function bodies, no fenced code blocks containing source.
+  - NO specific symbol names (function names, class names, variable names)
+    inside `## Where to look` entries. Module/directory level only.
+  - If the LESSON section below quotes brittle text from a prior answer,
+    DO NOT preserve that quoting in your edit. The hard rules apply to
+    the FINAL FILE CONTENT, not just to what you write — if the doc you
+    edit already contains line numbers anywhere (left over from old rot),
+    your edit will be reverted unless you ALSO scrub those lines as part
+    of this change.
+  - When in doubt, drop the entry. A missing pointer is recoverable; a
+    reverted commit is wasted work.
+
+Self-check before you call your final Edit:
+  1. Grep your proposed content for `:L`, `.py:`, `.ts:`, `.js:`, `.md:`,
+     `lines `, `line `. Any hit → rewrite without it.
+  2. If the file already contains brittle lines outside your edit, either
+     fix them in the same edit or output kind="escalated" with reason
+     "preexisting_brittle_content".
+
+Idempotency:
+  - If a `## Where to look` entry for the same module already exists,
+    leave it. Do not duplicate.
+  - If an existing entry has line numbers, REWRITE it to module-level
+    (this is a real improvement, not a violation).
 
 Output ONE JSON object (no prose, no markdown fence):
 
@@ -160,23 +200,21 @@ Output ONE JSON object (no prose, no markdown fence):
   "kind": "improved" | "skipped" | "escalated",
   "confidence": "high" | "medium" | "low",
   "canonical_path": "docs/..." or null,
-  "verified_refs_added": ["path:L42-L60", ...],
+  "pointers_added": ["services/auth/ — handles login", ...],
   "edits_applied": true or false,
   "summary": "one-line plain English",
   "escalation_reason": "..." or null
 }}
 
---- LOSS ---
-Question: {question}
+--- LESSON ---
+Question         : {question}
+Reason gate fired: {reason}
 
-Brain answer (LOST):
+Brain answer (existing context, for understanding what the brain already said):
 {brain_answer}
 
-No-brain answer (WON):
+No-brain answer (what the agent reached by exploring):
 {no_brain_answer}
-
-Judge's reason:
-{reason}
 """.rstrip()
 
 
@@ -196,12 +234,51 @@ def _extract_json(text: str) -> dict[str, Any] | None:
         return None
 
 
+_BRITTLE_PATTERNS = (
+    re.compile(r":L\d+"),                  # foo.py:L42
+    re.compile(r"\.[a-zA-Z]{1,5}:\d+"),    # foo.py:42
+    re.compile(r"\(lines?\s+\d+", re.IGNORECASE),
+)
+
+
+def _has_brittle_specifics(text: str) -> str | None:
+    """Return the offending pattern if text contains brittle specifics."""
+    for pat in _BRITTLE_PATTERNS:
+        m = pat.search(text or "")
+        if m:
+            return m.group(0)
+    return None
+
+
+def _revert_brittle_edits(canonical_path: str | None) -> None:
+    """If the LLM violated the no-line-numbers rule, drop its edit. Uses
+    git checkout to restore the file (or remove it if it was new)."""
+    if not canonical_path:
+        return
+    from .shared import _run_git
+    rel = canonical_path
+    # If the file is tracked, restore it; if not, it was new — delete it.
+    ls = _run_git(["ls-files", "--error-unmatch", rel])
+    if ls.returncode == 0:
+        _run_git(["checkout", "--", rel])
+    else:
+        try:
+            (REPO_PATH / rel).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _evolve_one_loss(loss: dict[str, Any]) -> dict[str, Any]:
     from .shared import ask_llm
 
+    lesson = loss.get("lesson") or {}
+    pointer_files = lesson.get("pointer_files") or []
+    topic = lesson.get("topic") or loss.get("question", "")[:200]
+
     prompt = _EVOLVE_PROMPT.format(
         repo=str(REPO_PATH),
-        brain_repo_parent=str(REPO_PATH.parent),
+        topic=topic,
+        pointer_files=json.dumps(pointer_files, ensure_ascii=False),
         question=loss.get("question", "")[:600],
         brain_answer=str(loss.get("brain_answer", ""))[:3000],
         no_brain_answer=str(loss.get("no_brain_answer", ""))[:3000],
@@ -218,11 +295,37 @@ def _evolve_one_loss(loss: dict[str, Any]) -> dict[str, Any]:
         "kind": "skipped",
         "confidence": "low",
         "canonical_path": None,
-        "verified_refs_added": [],
+        "pointers_added": [],
         "edits_applied": False,
         "summary": "agentic judge unavailable or unparseable",
         "escalation_reason": "judge_unavailable",
     }
+
+    # Post-write guard: if the LLM edited a doc and the result contains
+    # any brittle specific (line number, line range, file:line), revert
+    # the edit and downgrade to skipped. This is the belt-and-suspenders
+    # backstop on top of the prompt's hard rules.
+    canonical = payload.get("canonical_path")
+    if payload.get("edits_applied") and canonical:
+        try:
+            full = REPO_PATH / canonical
+            if full.exists():
+                content = full.read_text(encoding="utf-8", errors="replace")
+                offender = _has_brittle_specifics(content)
+                if offender:
+                    _revert_brittle_edits(canonical)
+                    payload = {
+                        "kind": "skipped",
+                        "confidence": "low",
+                        "canonical_path": canonical,
+                        "pointers_added": [],
+                        "edits_applied": False,
+                        "summary": f"reverted: brittle pattern {offender!r}",
+                        "escalation_reason": "brittle_specifics_detected",
+                    }
+        except OSError:
+            pass
+
     payload["question"] = loss.get("question", "")[:160]
     payload["backend"] = backend
     return payload

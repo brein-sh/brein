@@ -235,51 +235,138 @@ def _which_cli() -> str | None:
 
 
 def _ask(prompt: str, disable_brain: bool = False) -> tuple[str, str, dict[str, Any]]:
+    """One-shot ask, no tools. Used by gate and per-arm success classifier."""
     return ask_llm(prompt, disable_brain=disable_brain, timeout_s=EVAL_CLI_TIMEOUT_S)
 
 
-# ── Judge ────────────────────────────────────────────────────────────────
-def _judge(question: str, brain_answer: str, no_brain_answer: str) -> tuple[str, str, str, bool, dict[str, Any]]:
+# Tools the A/B arms are allowed to use. Read/Grep/Glob = navigation;
+# Bash = git, ls, anything else. Edit deliberately omitted — the eval
+# is read-only; nothing should mutate the user's repos.
+_AB_TOOLS = ["Read", "Grep", "Glob", "Bash"]
+
+
+def _ask_agentic(prompt: str, disable_brain: bool = False) -> tuple[str, str, dict[str, Any]]:
+    """Agentic ask with real tools. Used for the A/B arms so we capture
+    a trajectory (which files were read, what was grepped)."""
+    return ask_llm(
+        prompt,
+        disable_brain=disable_brain,
+        allowed_tools=_AB_TOOLS,
+        timeout_s=EVAL_CLI_TIMEOUT_S,
+    )
+
+
+# ── Per-arm success classifier (replaces pairwise "who's better") ───────
+#
+# Why this shape: the old pairwise judge rewarded "more specific" and so
+# punished the brain on any "where is X" question (the no-brain agent's
+# fresh grep always cites concrete paths). The evolve loop then learned to
+# paste those paths into memory, which immediately rot. The new design
+# scores each arm INDEPENDENTLY on a binary "did it answer the question?"
+# and lets the trajectory diff (in _make_lesson) decide what's worth
+# learning. One LLM call, no comparison surface for shortcut bias.
+
+def _classify_success(question: str, brain_answer: str, no_brain_answer: str) -> tuple[bool, bool, dict[str, Any]]:
     prompt = (
-        "Compare two AI assistants answering the same question. Pick which is "
-        "more helpful, accurate, and specific. If they are equivalent or both "
-        "fail, say tie.\n\n"
-        "Also classify the question:\n"
-        "  - internal_only: only answerable with company-specific knowledge "
-        "(internal facts, decisions, people, dates). General training data alone cannot answer.\n"
-        "  - general: answerable from general training-data knowledge alone, no company context needed.\n"
-        "  - mixed: needs both — a general topic with a company-specific angle.\n\n"
-        "Also flag whether Answer A explicitly admitted it could not find a "
-        "useful answer in the brain (e.g. 'I don't have this', 'no record of', "
-        "'couldn't find', 'not in the docs'). True only if A says it gave up — "
-        "NOT if A simply answered poorly.\n\n"
+        "Two assistants tried to answer the same question. For each, decide "
+        "whether the answer actually addresses the question with a real, "
+        "useful answer (true) or whether it failed / said it couldn't find "
+        "anything / gave a vague non-answer (false). Judge each independently.\n\n"
         f"Question: {question[:1000]}\n\n"
-        f"Answer A (with brain retrieval):\n{brain_answer[:2000]}\n\n"
-        f"Answer B (no brain, model knowledge only):\n{no_brain_answer[:2000]}\n\n"
-        'Respond with JSON only: {"verdict": "brain_better" | "no_brain_better" | "tie", '
-        '"reason": "one short sentence", '
-        '"question_class": "internal_only" | "general" | "mixed", '
-        '"brain_admitted_no_answer": true | false}'
+        f"Answer A:\n{brain_answer[:2000]}\n\n"
+        f"Answer B:\n{no_brain_answer[:2000]}\n\n"
+        'Respond with JSON only: {"a_success": true|false, "b_success": true|false}'
     )
     raw, _, meta = _ask(prompt, disable_brain=True)
     if not raw:
-        return "tie", "judge_unavailable", "unknown", False, meta
+        return False, False, meta
     try:
         start = raw.find("{")
         end = raw.rfind("}")
         if start >= 0 and end > start:
             parsed = json.loads(raw[start : end + 1])
-            verdict = parsed.get("verdict", "tie")
-            if verdict not in {"brain_better", "no_brain_better", "tie"}:
-                verdict = "tie"
-            qclass = parsed.get("question_class", "unknown")
-            if qclass not in {"internal_only", "general", "mixed"}:
-                qclass = "unknown"
-            admitted = bool(parsed.get("brain_admitted_no_answer", False))
-            return verdict, str(parsed.get("reason", ""))[:240], qclass, admitted, meta
+            return bool(parsed.get("a_success", False)), bool(parsed.get("b_success", False)), meta
     except Exception:
         pass
-    return "tie", "judge_parse_error", "unknown", False, meta
+    return False, False, meta
+
+
+# Files under these dirs aren't "load-bearing pointers" — they're noise
+# the brain shouldn't learn to point at.
+_LESSON_PATH_EXCLUDES = (
+    str(REPO_PATH),                                       # the brain repo itself
+    os.path.expanduser("~/.brein"),                       # brain runtime state
+    "/tmp/",
+    "/private/tmp/",
+)
+
+
+def _module_of(path: str) -> str:
+    """Module-granularity bucket for a file path. Strip filename → directory.
+    Used to dedup `foo/bar/x.py` and `foo/bar/y.py` to `foo/bar`."""
+    p = path.rstrip("/")
+    if "/" in p:
+        return p.rsplit("/", 1)[0]
+    return p
+
+
+def _diff_trajectories(brain_traj: dict[str, Any], no_brain_traj: dict[str, Any]) -> list[str]:
+    """Files the no-brain arm read that the brain arm never opened, at
+    module granularity. These are the candidate pointers the brain is
+    missing. Returns ordered, deduped list — empty if no diff."""
+    brain_modules = {_module_of(f) for f in (brain_traj.get("files_read") or [])}
+    pointers: list[str] = []
+    seen: set[str] = set()
+    for f in (no_brain_traj.get("files_read") or []):
+        if any(f.startswith(prefix) for prefix in _LESSON_PATH_EXCLUDES):
+            continue
+        mod = _module_of(f)
+        if mod in brain_modules or mod in seen:
+            continue
+        seen.add(mod)
+        pointers.append(f)
+    return pointers
+
+
+def _make_lesson(
+    question: str,
+    brain_success: bool, no_brain_success: bool,
+    brain_traj: dict[str, Any], no_brain_traj: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a lesson the evolve loop should learn from, or None.
+
+    Strong lesson  : brain failed AND no_brain succeeded → the brain misrouted
+                     or stayed silent; the files no_brain found are the missing
+                     pointers.
+    Soft lesson    : both succeeded BUT no_brain used materially fewer tool
+                     calls AND uncovered files brain never touched → brain's
+                     pointer set is incomplete.
+    Otherwise      : None. Nothing to learn (brain won, both failed, or the
+                     no-brain win was just better prose with no new files).
+    """
+    pointers = _diff_trajectories(brain_traj, no_brain_traj)
+    if not pointers:
+        return None
+    if not brain_success and no_brain_success:
+        return {"reason": "brain_failed_no_brain_found", "pointer_files": pointers[:8], "topic": question[:200]}
+    brain_calls = int(brain_traj.get("num_tool_calls") or 0)
+    no_brain_calls = int(no_brain_traj.get("num_tool_calls") or 0)
+    if (brain_success and no_brain_success
+            and no_brain_calls > 0
+            and brain_calls >= no_brain_calls + 3):
+        return {"reason": "brain_inefficient_missing_pointer", "pointer_files": pointers[:8], "topic": question[:200]}
+    return None
+
+
+def _derive_verdict(brain_success: bool, no_brain_success: bool, lesson: dict[str, Any] | None) -> str:
+    """Backward-compat label for dashboards. Not used by the loop."""
+    if brain_success and not no_brain_success:
+        return "brain_better"
+    if no_brain_success and not brain_success:
+        return "no_brain_better"
+    if lesson is not None:
+        return "no_brain_better"  # had something to teach → de facto loss
+    return "tie"
 
 
 def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -> None:
@@ -309,15 +396,23 @@ def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -
         f"Question: {question}"
     )
 
-    brain_answer, backend, brain_meta = _ask(brain_prompt, disable_brain=False)
-    no_brain, _, no_brain_meta = _ask(no_brain_prompt, disable_brain=True)
+    brain_answer, backend, brain_meta = _ask_agentic(brain_prompt, disable_brain=False)
+    no_brain, _, no_brain_meta = _ask_agentic(no_brain_prompt, disable_brain=True)
 
     if not brain_answer and not no_brain:
         return
 
-    verdict, reason, question_class, brain_admitted_no_answer, judge_meta = _judge(
+    brain_success, no_brain_success, judge_meta = _classify_success(
         question, brain_answer, no_brain,
     )
+    brain_traj = brain_meta.get("trajectory") or {}
+    no_brain_traj = no_brain_meta.get("trajectory") or {}
+    lesson = _make_lesson(question, brain_success, no_brain_success, brain_traj, no_brain_traj)
+    verdict = _derive_verdict(brain_success, no_brain_success, lesson)
+    reason = (lesson or {}).get("reason", "no_lesson")
+    # Kept for dashboard back-compat; no longer drives the loop.
+    question_class = "unknown"
+    brain_admitted_no_answer = bool(brain_answer) and not brain_success
 
     def _num(d: dict[str, Any], k: str) -> float:
         v = d.get(k)
@@ -340,6 +435,9 @@ def _run_ab(question: str, evidence_block: str, trigger: str, query_hash: str) -
         "reason": reason,
         "question_class": question_class,
         "brain_admitted_no_answer": brain_admitted_no_answer,
+        "brain_success": brain_success,
+        "no_brain_success": no_brain_success,
+        "lesson": lesson,
         "backend": backend,
         # Per-arm metadata — wall-clock, tokens, cost, turns, cache hits, etc.
         "brain_meta": brain_meta,

@@ -300,11 +300,18 @@ def _llm_cli_completion(
     cwd = cwd or os.path.expanduser("~")
     prompt_chars = len(prompt)
 
-    use_json = (Path(cli).name == "claude")
+    is_claude = (Path(cli).name == "claude")
+    # When tools are allowed on claude, switch to stream-json so we can
+    # parse the per-turn tool_use events into a trajectory. Otherwise
+    # stay on plain json (one-shot answer + usage stats).
+    use_stream = bool(is_claude and allowed_tools)
+    use_json = is_claude and not use_stream
     cmd: list[str] = [cli, "-p", prompt]
-    if use_json:
+    if use_stream:
+        cmd += ["--output-format", "stream-json", "--verbose"]
+    elif use_json:
         cmd += ["--output-format", "json"]
-    if allowed_tools and Path(cli).name == "claude":
+    if allowed_tools and is_claude:
         cmd += ["--allowed-tools", ",".join(allowed_tools)]
 
     meta: dict[str, Any] = {
@@ -341,7 +348,11 @@ def _llm_cli_completion(
     raw = (r.stdout or "").strip()
     text = raw
 
-    if use_json and raw.startswith("{"):
+    if use_stream:
+        text, traj, stream_meta = _parse_claude_stream(raw)
+        meta.update(stream_meta)
+        meta["trajectory"] = traj
+    elif use_json and raw.startswith("{"):
         try:
             payload = json.loads(raw)
             text = str(payload.get("result", "") or "").strip()
@@ -362,6 +373,80 @@ def _llm_cli_completion(
     meta["answer_chars"] = len(text)
     meta["answer_tokens_est"] = len(text) // 4
     return text, meta
+
+
+def _parse_claude_stream(raw: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Parse `claude -p --output-format stream-json --verbose` output.
+
+    Each line is one JSON message. We extract:
+      - tool_use events (name, input) from assistant messages, preserving order
+      - the final text from the terminating `result` message
+      - usage / cost / turns from the same result message
+
+    Returns (final_text, trajectory_dict, meta_dict). Best-effort: malformed
+    lines are skipped; missing result yields empty text.
+    """
+    tool_calls: list[dict[str, Any]] = []
+    files_read: list[str] = []
+    files_read_set: set[str] = set()
+    grep_patterns: list[str] = []
+    bash_commands: list[str] = []
+    text = ""
+    meta: dict[str, Any] = {}
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mtype = msg.get("type")
+        if mtype == "assistant":
+            content = ((msg.get("message") or {}).get("content") or [])
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    name = block.get("name") or ""
+                    inp = block.get("input") or {}
+                    tool_calls.append({"tool": name, "input": inp})
+                    if name == "Read":
+                        fp = inp.get("file_path") or ""
+                        if fp and fp not in files_read_set:
+                            files_read_set.add(fp)
+                            files_read.append(fp)
+                    elif name == "Grep":
+                        pat = inp.get("pattern") or ""
+                        if pat:
+                            grep_patterns.append(pat)
+                    elif name == "Bash":
+                        cmd = inp.get("command") or ""
+                        if cmd:
+                            bash_commands.append(cmd[:200])
+        elif mtype == "result":
+            text = str(msg.get("result", "") or "").strip()
+            usage = msg.get("usage", {}) or {}
+            meta["input_tokens"] = usage.get("input_tokens")
+            meta["output_tokens"] = usage.get("output_tokens")
+            meta["cache_creation_input_tokens"] = usage.get("cache_creation_input_tokens")
+            meta["cache_read_input_tokens"] = usage.get("cache_read_input_tokens")
+            meta["cost_usd"] = msg.get("total_cost_usd")
+            meta["num_turns"] = msg.get("num_turns")
+            meta["duration_ms"] = msg.get("duration_ms")
+            meta["duration_api_ms"] = msg.get("duration_api_ms")
+            meta["session_id"] = msg.get("session_id")
+            meta["is_error"] = msg.get("is_error", False)
+
+    traj = {
+        "tool_calls": tool_calls,
+        "files_read": files_read,
+        "grep_patterns": grep_patterns,
+        "bash_commands": bash_commands,
+        "num_tool_calls": len(tool_calls),
+    }
+    return text, traj, meta
 
 
 def _llm_openrouter_completion(prompt: str, *, timeout_s: float = 60.0) -> tuple[str, dict[str, Any]]:
